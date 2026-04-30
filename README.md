@@ -146,9 +146,11 @@ Or register it from the Claude Code CLI:
 claude mcp add ag-cube-cm -- python -m ag_cube_cm.mcp_server
 ```
 
-### Step 3 — Load the skill and start talking
+### Step 3 — Load the command and start talking
 
-Open Claude Code in your project directory and invoke the skill:
+The `/spatial-crop-modeler` slash command is bundled with the repository at
+`.claude/commands/spatial-crop-modeler.md`. After cloning, open Claude Code
+in the project directory and invoke it:
 
 ```
 /spatial-crop-modeler

@@ -60,6 +60,8 @@ dssat_out.txt
 
 # ---- agent  internal memory -------------------------------------------
 .claude/
+!.claude/commands/
+!.claude/commands/**
 .gemini/
 # ---- OS --------------------------------------------------------------------
 .DS_Store
