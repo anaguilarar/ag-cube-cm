@@ -38,14 +38,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-
-SOIL_PATH    = "data_test/soilgrids_guad.nc"
-WEATHER_PATH = "data_test/weather_guadalupe_2021_2023.nc"
-OUTPUT_PATH  = "output_banana_biomass.nc"
-
-# ---------------------------------------------------------------------------
 # Config — planting date must be within the 2021-2023 weather window
 # ---------------------------------------------------------------------------
 
@@ -205,13 +197,13 @@ if __name__ == "__main__":
 
     # 6. Export — overwrite any existing file
     import os as _os
-    if _os.path.exists(OUTPUT_PATH):
-        _os.remove(OUTPUT_PATH)
-    ds_out.to_netcdf(OUTPUT_PATH)
-    print(f"\nSaved -> {OUTPUT_PATH}")
+    if _os.path.exists(cfg.SPATIAL_INFO.output_path):
+        _os.remove(cfg.SPATIAL_INFO.output_path)
+    ds_out.to_netcdf(cfg.SPATIAL_INFO.output_path)
+    print(f"\nSaved -> {cfg.SPATIAL_INFO.output_path}")
 
     # 7. Quick sanity check — open and close in a context manager
-    with xr.open_dataset(OUTPUT_PATH) as ds_check:
+    with xr.open_dataset(cfg.SPATIAL_INFO.output_path) as ds_check:
         biomass = ds_check["Avg_Biomass_g_mat"]
         valid   = float(biomass.count())
         print(f"\nSanity check:")

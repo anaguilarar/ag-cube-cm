@@ -11,6 +11,7 @@ SPATIAL_INFO:
   soil_path: 'data_test/soilgrids_guad.nc'
   weather_path: 'data_test/weather_guadalupe_2021_2023.nc'
   dem_path: 'data_test/guadalupe_dem.tif'
+  output_path: 'guadalupe_dssat_yield.nc'
 
 CROP:
   name: 'Maize'

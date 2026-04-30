@@ -6,8 +6,9 @@ GENERAL_INFO:
 
 SPATIAL_INFO:
   feature_name: 'shapeName'
-  soil_path: 'data_test/soilgrids_guad.nc'
-  weather_path: 'data_test/weather_guadalupe_2021_2023.nc'
+  soil_path: './data_test/soilgrids_guad.nc'
+  weather_path: './data_test/weather_guadalupe_2021_2023.nc'
+  output_path: 'guadalupe_banana_yield.nc'
 
 CROP:
   name: 'Banana'
