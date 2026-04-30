@@ -1,0 +1,30 @@
+GENERAL_INFO: 
+  country: 'Guadeloupe'
+  country_code: 'GLP'
+  model: 'dssat'
+  working_path: 'D:/tmp/dssat_runs'
+  dssat_path: 'D:/tmp'
+  ncores: 8
+
+SPATIAL_INFO:
+  feature_name: 'shapeName'
+  soil_path: 'data_test/soilgrids_guad.nc'
+  weather_path: 'data_test/weather_guadalupe_2021_2023.nc'
+  dem_path: 'data_test/guadalupe_dem.tif'
+
+CROP:
+  name: 'Maize'
+  cultivar: 'IB1072'
+
+MANAGEMENT:
+  planting_date: '2021-03-01'
+  n_planting_windows: 4
+  planting_window_days: 7
+  fertilizer_schedule:
+    - days_after_planting: 5
+      n_kg_ha: 50.0
+      p_kg_ha: 30.0
+    - days_after_planting: 30
+      n_kg_ha: 100.0
+    - days_after_planting: 60
+      n_kg_ha: 50.0

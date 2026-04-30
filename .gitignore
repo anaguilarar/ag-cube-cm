@@ -58,9 +58,9 @@ dssat_out.txt
 *.h5
 *.hdf5
 
-# ---- Claude Code internal memory -------------------------------------------
+# ---- agent  internal memory -------------------------------------------
 .claude/
-
+.gemini/
 # ---- OS --------------------------------------------------------------------
 .DS_Store
 Thumbs.db
@@ -71,3 +71,5 @@ desktop.ini
 .env.*
 *.pem
 *.key
+
+example_test/

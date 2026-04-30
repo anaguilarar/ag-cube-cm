@@ -1,0 +1,22 @@
+GENERAL_INFO: 
+  country: 'Guadeloupe'
+  country_code: 'GLP'
+  model: 'banana_n'
+  working_path: './tmp_banana_real'
+
+SPATIAL_INFO:
+  feature_name: 'shapeName'
+  soil_path: 'data_test/soilgrids_guad.nc'
+  weather_path: 'data_test/weather_guadalupe_2021_2023.nc'
+
+CROP:
+  name: 'Banana'
+
+MANAGEMENT:
+  planting_date: '2021-05-01'
+  life_cycle_years: 1
+  fertilizer_schedule:
+    - days_after_planting: 30
+      n_kg_ha: 50.0
+    - days_after_planting: 100
+      n_kg_ha: 50.0

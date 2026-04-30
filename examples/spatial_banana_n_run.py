@@ -26,14 +26,9 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from ag_cube_cm.config.schemas import (
-    CropConfig,
-    FertilizerApplication,
-    GeneralInfoConfig,
-    ManagementConfig,
-    SimulationConfig,
-    SpatialInfoConfig,
-)
+import argparse
+from ag_cube_cm.config.loader import load_config
+from ag_cube_cm.config.schemas import SimulationConfig
 from ag_cube_cm.models.banana_n.base import BananaModel
 
 logging.basicConfig(
@@ -54,29 +49,7 @@ OUTPUT_PATH  = "output_banana_biomass.nc"
 # Config — planting date must be within the 2021-2023 weather window
 # ---------------------------------------------------------------------------
 
-def make_config() -> SimulationConfig:
-    return SimulationConfig(
-        GENERAL_INFO=GeneralInfoConfig(
-            country="Guadeloupe",
-            country_code="GLP",
-            model="banana_n",
-            working_path="./tmp_banana_real",
-        ),
-        SPATIAL_INFO=SpatialInfoConfig(
-            feature_name="shapeName",
-            soil_path=SOIL_PATH,
-            weather_path=WEATHER_PATH,
-        ),
-        CROP=CropConfig(name="Banana"),
-        MANAGEMENT=ManagementConfig(
-            planting_date="2021-05-01",
-            life_cycle_years=1,          # 52 weeks
-            fertilizer_schedule=[
-                FertilizerApplication(days_after_planting=30,  n_kg_ha=50.0),
-                FertilizerApplication(days_after_planting=100, n_kg_ha=50.0),
-            ],
-        ),
-    )
+
 
 # ---------------------------------------------------------------------------
 # Per-pixel worker
@@ -119,11 +92,15 @@ if __name__ == "__main__":
 
     print("\n=== Banana-N real-data test (Guadalupe) ===\n")
 
-    # 1. Load datacubes lazily
-    print("Loading datacubes...")
-    weather_ds = xr.open_dataset(WEATHER_PATH)
-    soil_ds    = xr.open_dataset(SOIL_PATH)
-    cfg        = make_config()
+    parser = argparse.ArgumentParser(description="Banana-N real-data test")
+    parser.add_argument("--config", default="options/test_banana.yaml", help="Path to YAML config file")
+    args = parser.parse_args()
+
+    # 1. Load config and datacubes lazily
+    print("Loading config and datacubes...")
+    cfg        = load_config(args.config)
+    weather_ds = xr.open_dataset(cfg.SPATIAL_INFO.weather_path)
+    soil_ds    = xr.open_dataset(cfg.SPATIAL_INFO.soil_path)
 
     print(f"  Weather : {dict(weather_ds.dims)}  vars={list(weather_ds.data_vars)}")
     print(f"  Soil    : {dict(soil_ds.dims)}  vars={list(soil_ds.data_vars)}")
@@ -214,8 +191,8 @@ if __name__ == "__main__":
     ds_out.attrs.update({
         "description":    "Banana-N weekly biomass simulation - Guadalupe 2021",
         "planting_date":  "2021-03-01",
-        "source_weather": WEATHER_PATH,
-        "source_soil":    SOIL_PATH,
+        "source_weather": str(cfg.SPATIAL_INFO.weather_path),
+        "source_soil":    str(cfg.SPATIAL_INFO.soil_path),
         "Conventions":    "CF-1.8",
         "crs":            "EPSG:4326",
     })
