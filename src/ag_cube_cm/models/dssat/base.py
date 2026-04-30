@@ -18,6 +18,7 @@ from typing import Any, Dict
 
 import pandas as pd
 import xarray as xr
+from pyproj import Transformer
 
 from ag_cube_cm.models.base import CropModel
 from ag_cube_cm.models.factory import register_model
@@ -74,9 +75,19 @@ class DSSATModel(CropModel):
         df_wth = weather_slice.to_dataframe().reset_index().dropna()
         df_sol = soil_slice.to_dataframe().reset_index().dropna()
 
-        # Extract coordinates for header files
-        lat = float(df_sol['y'].iloc[0]) if 'y' in df_sol.columns else 0.0
-        lon = float(df_sol['x'].iloc[0]) if 'x' in df_sol.columns else 0.0
+        # Extract coordinates for header files — reproject to WGS84 if needed
+        raw_y = float(df_sol['y'].iloc[0]) if 'y' in df_sol.columns else 0.0
+        raw_x = float(df_sol['x'].iloc[0]) if 'x' in df_sol.columns else 0.0
+        src_crs = None
+        try:
+            src_crs = soil_slice.rio.crs
+        except Exception:
+            pass
+        if src_crs and src_crs.to_epsg() != 4326:
+            transformer = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
+            lon, lat = transformer.transform(raw_x, raw_y)
+        else:
+            lat, lon = raw_y, raw_x
 
         # Unit conversions for AgERA5 data
         # Temperatures: Kelvin → Celsius
@@ -138,7 +149,7 @@ class DSSATModel(CropModel):
             
             for _, row in df_wth.iterrows():
                 # Date format: YYJJJ (e.g., 2001-01-01 -> 01001)
-                yyjjj = row['date'].strftime("%y%j")
+                yyjjj = pd.to_datetime(row['date']).strftime("%y%j")
                 
                 srad = row.get('solar_radiation', row.get('srad', -99.0))
                 tmax = row.get('tmax', -99.0)
