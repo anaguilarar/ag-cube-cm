@@ -121,9 +121,14 @@ docs = [
     "myst-parser>=3.0.0",
 ]
 
+# MCP server support
+mcp = [
+    "mcp[cli]>=1.0.0",
+]
+
 # Convenience meta-extra: everything
 all = [
-    "ag-cube-cm[models,download,viz,dev,docs]",
+    "ag-cube-cm[models,download,viz,dev,docs,mcp]",
 ]
 
 
