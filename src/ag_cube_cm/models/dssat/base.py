@@ -131,6 +131,11 @@ class DSSATModel(CropModel):
         """
         file_path = self.working_dir / "WTHE0001.WTH"
 
+        # DSSAT requires strictly chronological rows — sort by date first.
+        df_wth = df_wth.copy()
+        df_wth['_date_parsed'] = pd.to_datetime(df_wth['date'])
+        df_wth = df_wth.sort_values('_date_parsed').drop(columns=['_date_parsed'])
+
         # Calculate Long-Term Average Temp (TAV) and Amplitude (AMP)
         if 'tmax' in df_wth.columns and 'tmin' in df_wth.columns:
             tav = ((df_wth['tmax'] + df_wth['tmin']) / 2).mean()
@@ -400,6 +405,17 @@ class DSSATModel(CropModel):
             return str(path.resolve())
 
         workdir_abs = _abs(self.working_dir)
+
+        # DSSAT DSSATPRO.V48 uses whitespace-delimited parsing for every line.
+        # A space anywhere in the path corrupts the M-line and produces rc=99
+        # ("Crop code incompatible with model specified"). Fail fast with a clear message.
+        if ' ' in workdir_abs:
+            raise RuntimeError(
+                f"DSSAT working directory path contains spaces, which DSSAT cannot handle "
+                f"(DSSATPRO whitespace-delimiter bug):\n  {workdir_abs}\n"
+                f"Set GENERAL_INFO.working_path to a path without spaces, "
+                f"e.g. 'D:/tmp/dssat_runs' or '/tmp/dssat_runs'."
+            )
 
         # WED must point to the weather FILE (stem only, no extension or trailing slash).
         # WTH file is always named WTHE0001.WTH — DSSAT appends .WTH itself.

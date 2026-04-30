@@ -1,0 +1,27 @@
+GENERAL_INFO: 
+  country: 'Malawi'
+  country_code: 'MLW'
+  model: 'dssat'
+  working_path: 'D:/tmp/MLW_dssat'
+  dssat_path: 'D:/tmp'
+  ncores: 10
+
+SPATIAL_INFO:
+  feature_name: 'shapeName'
+  soil_path: 'D:/Google/My Drive/CIAT/agwise/soil_mwi.nc'
+  weather_path: 'D:/Google/My Drive/CIAT/agwise/weather_mwi_2000_2019.nc'
+  output_path: malawi.nc
+  dem_path: null
+
+CROP:
+  name: 'Maize'
+  cultivar: 'IB1072'
+
+MANAGEMENT:
+  planting_date: '2000-05-01'
+  n_planting_windows: 35
+  planting_window_days: 7
+  fertilizer_schedule:
+    - days_after_planting: 5
+      n_kg_ha: 0
+      p_kg_ha: 0
