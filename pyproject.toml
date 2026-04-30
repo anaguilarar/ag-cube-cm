@@ -156,9 +156,12 @@ exclude = ["tests*"]
 
 [tool.setuptools.package-data]
 ag_cube_cm = [
-    "py.typed",       # PEP 561 marker
-    "**/*.yaml",      # bundled example configs
+    "py.typed",
+    "**/*.yaml",
     "**/*.yml",
+    "models/dssat/static/*",        # root-level DSSAT data files (DATA.CDE, DETAIL.CDE, bin/)
+    "models/dssat/static/**/*",     # all subdirectory files (Genotype/, Soil/, Pest/, etc.)
+    "models/dssat/exp_files/*",     # bundled experiment template files
 ]
 
 
