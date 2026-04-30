@@ -269,6 +269,13 @@ class SpatialInfoConfig(BaseModel):
             description="DEM raster path (required for CAF2021 and SIMPLE model).",
         ),
     ]
+    output_path: Annotated[
+        str,
+        Field(
+            default="output_yield.nc",
+            description="Path for the output yield datacube (.nc).",
+        ),
+    ]
 
     @field_validator("soil_path", "weather_path", "geospatial_path", "dem_path", mode="before")
     @classmethod
