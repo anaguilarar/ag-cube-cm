@@ -59,9 +59,7 @@ dssat_out.txt
 *.hdf5
 
 # ---- agent  internal memory -------------------------------------------
-.claude/
-!.claude/commands/
-!.claude/commands/**
+.claude/skills/
 .gemini/
 # ---- OS --------------------------------------------------------------------
 .DS_Store

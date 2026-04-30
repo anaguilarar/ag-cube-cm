@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ag-cube-cm": {
+      "command": "python",
+      "args": ["-m", "ag_cube_cm.mcp_server"],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      },
+      "description": "ag-cube-cm tools: download AgERA5/CHIRPS weather, SoilGrids soil data, and run DSSAT/BANANA_N crop model simulations."
+    }
+  }
+}
