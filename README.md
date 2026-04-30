@@ -143,7 +143,7 @@ Create `.claude/mcp_config.json` in your project root (or in
 Or register it from the Claude Code CLI:
 
 ```bash
-claude mcp add ag-cube-cm python -- -m ag_cube_cm.mcp_server
+claude mcp add ag-cube-cm -- python -m ag_cube_cm.mcp_server
 ```
 
 ### Step 3 — Load the skill and start talking
