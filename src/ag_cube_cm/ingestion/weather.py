@@ -149,7 +149,8 @@ def read_annual_data(path: str, year:str,xdim_name: str = 'longitude',
                                 ydim_name, xdim_name, depthdim_name) for fn, date in times]
     
     annual_data = xarray.concat(list_xrdata, dim = depthdim_name)
-    
+
+    import rioxarray  # noqa: F401  — required before any .rio accessor call
     tmp = list_xrdata[0].copy().rio.write_crs(crs)
     spatial_ref = tmp.rio.write_transform(tmp.rio.transform()).spatial_ref
     annual_data =  annual_data.assign(crs = spatial_ref)

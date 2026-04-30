@@ -160,14 +160,17 @@ def download_soil(
     depths: list[str] | None = None,
     variables: list[str] | None = None,
 ) -> str:
-    """Download SoilGrids data for a country and save as GeoTIFF/NetCDF files.
+    """Download SoilGrids data and merge into a multi-depth NetCDF datacube.
+
+    Downloads raw GeoTIFF files from SoilGrids, then builds and saves a
+    merged multi-depth NetCDF datacube ready for use with run_simulation.
 
     Parameters
     ----------
     country_code : str
         ISO 3166-1 alpha-3 code (e.g. 'MWI').
     output_folder : str | None
-        Where to save downloaded files.
+        Where to save downloaded files and the final NetCDF.
         Defaults to '<tempdir>/ag_cube_cm/<country_code>/soil'.
     bbox : list[float] | None
         [xmin, ymin, xmax, ymax] override.  Auto-fetched when omitted.
@@ -179,10 +182,11 @@ def download_soil(
 
     Returns
     -------
-    JSON with status, output_folder, and list of downloaded files.
+    JSON with status, output_path (the merged NetCDF), output_folder, and file count.
     """
     try:
         from ag_cube_cm.ingestion.soil import SoilGridsDownloader
+        from ag_cube_cm.transform.soil_cube import SoilDataCubeBuilder
 
         if output_folder is None:
             output_folder = str(
@@ -196,6 +200,7 @@ def download_soil(
         if bbox is None:
             bbox = _country_bbox(country_code)
 
+        # Step 1 — download raw GeoTIFFs from SoilGrids
         dl = SoilGridsDownloader(
             soil_layers=variables,
             depths=depths,
@@ -203,7 +208,22 @@ def download_soil(
         )
         downloaded = dl.download(boundaries=bbox)
 
+        # Step 2 — merge GeoTIFFs into a multi-depth NetCDF datacube
+        nc_filename = f"soil_{country_code.lower()}.nc"
+        builder = SoilDataCubeBuilder(
+            data_folder=output_folder,
+            variables=variables,
+            extent=bbox,
+            reference_variable="wv1500",
+            target_crs="EPSG:4326",
+        )
+        nc_path = builder.build_and_save(
+            output_path=output_folder,
+            filename=nc_filename,
+        )
+
         return _ok({
+            "output_path": nc_path,
             "output_folder": output_folder,
             "country_code": country_code,
             "bbox": bbox,

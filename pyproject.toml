@@ -73,6 +73,10 @@ dependencies = [
     "tqdm>=4.66.0",
     "requests>=2.33",
     "unidecode>=1.3.0",
+    "pyproj>=3.6.0",
+    "cdsapi>=0.7.0",
+    "Requests>=2.31.0",
+    "soilgrids>=0.1.4",
 ]
 
 
