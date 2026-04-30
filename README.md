@@ -140,17 +140,30 @@ Create `.claude/mcp_config.json` in your project root (or in
 }
 ```
 
-Or register it from the Claude Code CLI:
+### Step 3 — Start Claude Code and load the command
+
+To use the custom skill, you must first have the `.claude` folder available locally. You can do this by cloning the repository:
 
 ```bash
-claude mcp add ag-cube-cm -- python -m ag_cube_cm.mcp_server
+git clone https://github.com/anaguilarar/ag-cube-cm.git
+cd ag-cube-cm
+```
+*(Alternatively, you can simply download the `.claude` folder into your working directory).*
+
+Next, start Claude Code in that directory:
+
+```bash
+claude
 ```
 
-### Step 3 — Load the command and start talking
+Once Claude Code is running, invoke the bundled slash command:
 
-The `/spatial-crop-modeler` slash command is bundled with the repository at
-`.claude/commands/spatial-crop-modeler.md`. After cloning, open Claude Code
-in the project directory and invoke it:
+```
+/spatial-crop-modeler
+```
+
+Then describe what you want in plain language. The assistant asks clarifying
+questions, then calls the MCP tools in the correct order automatically.
 
 ```
 /spatial-crop-modeler

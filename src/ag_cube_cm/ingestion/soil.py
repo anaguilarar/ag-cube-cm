@@ -72,8 +72,22 @@ def _download_using_rasterio(url: str, extent: list[float], output_path: str) ->
     """
     x1, y1, x2, y2 = extent
     with rasterio.open(url) as src:
-        window = from_bounds(x1, y1, x2, y2, src.transform)
+        # Reproject the EPSG:4326 bbox to the source CRS when the source is
+        # projected (Homolosine metres).  Passing degree coordinates to a
+        # projected transform produces a garbage window and 1×1 output.
+        rx1, ry1, rx2, ry2 = x1, y1, x2, y2
+        if src.crs is not None and not src.crs.is_geographic:
+            from pyproj import Transformer
+            tr = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+            rx1, ry1 = tr.transform(x1, y1)
+            rx2, ry2 = tr.transform(x2, y2)
+
+        window = from_bounds(rx1, ry1, rx2, ry2, src.transform)
         transform = src.window_transform(window)
+        # Derive pixel dimensions directly from the window (works for any CRS /
+        # resolution) rather than the old hardcoded ÷250 formula.
+        height = max(1, round(window.height))
+        width  = max(1, round(window.width))
 
         profile = src.profile.copy()
         profile.update(
@@ -83,8 +97,8 @@ def _download_using_rasterio(url: str, extent: list[float], output_path: str) ->
                 "compress": "deflate",
                 "dtype": "int16",
                 "nodata": -32768,
-                "height": abs(int((y2 - y1) / 250)) or 1,
-                "width": abs(int((x2 - x1) / 250)) or 1,
+                "height": height,
+                "width": width,
                 "transform": transform,
             }
         )
@@ -92,7 +106,7 @@ def _download_using_rasterio(url: str, extent: list[float], output_path: str) ->
 
         with rasterio.open(output_path, "w", **profile) as dst:
             dst.update_tags(**tags)
-            dst.write(src.read(window=window))
+            dst.write(src.read(window=window, out_shape=(src.count, height, width)))
 
     logger.debug("Saved %s", output_path)
 

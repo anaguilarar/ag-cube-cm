@@ -200,7 +200,20 @@ def download_soil(
         if bbox is None:
             bbox = _country_bbox(country_code)
 
-        # Step 1 — download raw GeoTIFFs from SoilGrids
+        # Step 1 — purge any previously-downloaded wv* files that are 1×1 pixels
+        # (a known corruption from the old hardcoded ÷250 height/width formula).
+        # The downloader skips existing files, so stale ones must be removed first.
+        import rasterio as _rio
+        for stale in Path(output_folder).glob("wv*.tif"):
+            try:
+                with _rio.open(stale) as _src:
+                    if _src.width <= 1 or _src.height <= 1:
+                        stale.unlink()
+                        logger.info("Removed corrupted 1×1 wv file: %s", stale)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Step 2 — download raw GeoTIFFs from SoilGrids
         dl = SoilGridsDownloader(
             soil_layers=variables,
             depths=depths,
@@ -213,7 +226,8 @@ def download_soil(
         builder = SoilDataCubeBuilder(
             data_folder=output_folder,
             variables=variables,
-            extent=bbox,
+            # extent omitted — downloaded TIFs are already spatially clipped
+            # and are in ESRI:54052; passing a WGS84 bbox would return no data.
             reference_variable="wv1500",
             target_crs="EPSG:4326",
         )

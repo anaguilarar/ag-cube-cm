@@ -162,8 +162,19 @@ def resample_variables(dict_xr,reference_variable = None,
     resampling_method = resampling_methods.get(method.lower(), Resampling.nearest)
 
     listvariables = list(dict_xr.keys())
+    if not listvariables:
+        raise ValueError(
+            "resample_variables: no variables were loaded successfully. "
+            "Check that the raster files exist and that any crop_extent is in "
+            "the same CRS as the raster files (SoilGrids uses ESRI:54052)."
+        )
     if reference_variable is None:
         reference_variable = listvariables[0]
+    if reference_variable not in listvariables:
+        raise ValueError(
+            f"resample_variables: reference variable '{reference_variable}' was not "
+            f"loaded successfully. Available variables: {listvariables}"
+        )
     listvariables.remove(reference_variable)
 
     # 1. Prepare Reference

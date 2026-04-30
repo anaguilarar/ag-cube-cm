@@ -374,9 +374,19 @@ class SoilDataCubeBuilder:
         str
             Path to the saved NetCDF file.
         """
+        import rioxarray  # noqa: F401
         from ag_cube_cm.spatial.raster_ops import check_crs_in_dataset, set_encoding
 
         cube = self.build(verbose=verbose)
+
+        # Ensure CRS is written to dataset attrs and spatial_ref variable
+        if self.target_crs:
+            try:
+                cube = cube.rio.write_crs(self.target_crs, grid_mapping_name="spatial_ref")
+                cube.attrs["crs"] = self.target_crs
+            except Exception:  # noqa: BLE001
+                pass
+
         cube = check_crs_in_dataset(cube)
 
         if filename is None:
@@ -401,6 +411,10 @@ class SoilDataCubeBuilder:
     ) -> xr.Dataset:
         """Load and co-register all variables for a single depth layer.
 
+        Uses rioxarray directly so the native CRS is explicitly assigned
+        (SoilGrids TIFs often have no embedded CRS metadata) before
+        reprojection to ``target_crs`` and grid-matching to the reference.
+
         Parameters
         ----------
         var_paths : dict[str, str]
@@ -409,23 +423,74 @@ class SoilDataCubeBuilder:
         Returns
         -------
         xr.Dataset
-            Co-registered multi-variable dataset for this depth.
+            Co-registered multi-variable dataset for this depth, in
+            ``target_crs`` (default EPSG:4326).
         """
-        from ag_cube_cm.ingestion.gis_functions import read_raster_data  # legacy
+        import rioxarray  # noqa: F401
 
-        var_datasets: dict[str, xr.Dataset] = {}
+        data_arrays: dict[str, xr.DataArray] = {}
+        ref_da: xr.DataArray | None = None
+
         for var, fp in var_paths.items():
             try:
-                var_datasets[var] = read_raster_data(fp, crop_extent=self._extent)
+                da = rioxarray.open_rasterio(fp, masked=True)
+                if "band" in da.dims and da.sizes["band"] == 1:
+                    da = da.squeeze("band", drop=True)
+
+                # Assign CRS when the TIF has no embedded CRS metadata.
+                # Two sources exist with different projections:
+                #   *_30s.tif  — SoilGrids WCS → Homolosine (coordinates in metres, >1000)
+                #   *_mean.tif — Google Storage → EPSG:4326 (coordinates in degrees, <180)
+                if da.rio.crs is None:
+                    x_mag = float(abs(da.x.values[0])) if da.x.size > 0 else 0.0
+                    native_crs = self.crs if x_mag > 1000 else "EPSG:4326"
+                    da = da.rio.write_crs(native_crs)
+
+                # Reproject to target CRS
+                if self.target_crs:
+                    current = da.rio.crs
+                    from pyproj import CRS as _CRS
+                    if current and _CRS(str(current)) != _CRS(self.target_crs):
+                        da = da.rio.reproject(self.target_crs)
+
+                da.name = var
+                data_arrays[var] = da
+
+                if var == self.reference_variable:
+                    ref_da = da
+
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not read %s (%s): %s", var, fp, exc)
 
-        return resample_variables(
-            var_datasets,
-            reference_variable=self.reference_variable,
-            verbose=verbose,
-            target_crs=self.target_crs,
-        )
+        if not data_arrays:
+            raise ValueError(
+                f"No soil variables could be loaded for this depth layer. "
+                f"Files attempted: {list(var_paths.values())}"
+            )
+
+        # Fall back to the first successfully loaded variable as reference
+        if ref_da is None:
+            ref_da = next(iter(data_arrays.values()))
+            logger.warning(
+                "Reference variable '%s' not loaded; using '%s' instead.",
+                self.reference_variable, ref_da.name,
+            )
+
+        # Align all variables to the reference grid
+        merged: dict[str, xr.DataArray] = {}
+        for var, da in data_arrays.items():
+            try:
+                merged[var] = ref_da if var == ref_da.name else da.rio.reproject_match(ref_da)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not resample %s to reference grid: %s", var, exc)
+
+        ds = xr.Dataset(merged)
+        if self.target_crs:
+            try:
+                ds.rio.write_crs(self.target_crs, inplace=True)
+            except Exception:  # noqa: BLE001
+                pass
+        return ds
 
     @staticmethod
     def encoding(cube: xr.Dataset, compress_method: str = "zlib") -> dict[str, dict]:
