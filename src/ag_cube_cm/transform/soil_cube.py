@@ -13,8 +13,7 @@ Key classes and functions
 * :class:`SoilDataCubeBuilder`  — reads per-depth folders of GeoTIFF files,
   co-registers them to a common spatial reference, and concatenates them
   along a ``depth`` dimension.
-* :func:`create_depth_dimension` — low-level stacking helper (mirrors the
-  legacy ``spatialdata.datacube.create_dimension``).
+* :func:`create_depth_dimension` — low-level stacking helper
 * :func:`calculate_rgf`  — Root Growth Factor calculation for soil layers.
 * :func:`find_soil_textural_class_in_nparray` — vectorised USDA texture
   classification on 2-D numpy arrays.
@@ -39,8 +38,8 @@ import tqdm
 import xarray as xr
 import geopandas as gpd
 
-from spatialdata.files_manager import SoilFolderManager  # legacy helper
-from spatialdata.utils import resample_variables  # legacy helper
+from ag_cube_cm.ingestion.files_manager import SoilFolderManager  # legacy helper
+from ag_cube_cm.ingestion.utils import resample_variables  # legacy helper
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +247,7 @@ def get_layer_texture(
     xr.Dataset
         Original dataset with an additional ``texture`` variable.
     """
-    from spatialdata.gis_functions import add_2dlayer_toxarrayr  # legacy
+    from ag_cube_cm.ingestion.gis_functions import add_2dlayer_toxarrayr  # legacy
 
     # Scale if stored as g/kg (SoilGrids raw values > 100)
     sand = soil_layer["sand"].values

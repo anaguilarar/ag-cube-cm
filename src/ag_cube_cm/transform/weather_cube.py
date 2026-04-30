@@ -176,9 +176,6 @@ def set_weather_encoding(
 class MLTWeatherDataCube:
     """Build a multi-temporal weather NetCDF datacube from raw per-variable files.
 
-    The class mirrors the legacy ``spatialdata.climate_data.MLTWeatherDataCube``
-    but adds explicit chunking for pixel-level crop model extraction.
-
     Parameters
     ----------
     directory_paths : dict[str, str]
@@ -197,7 +194,7 @@ class MLTWeatherDataCube:
 
     Examples
     --------
-    >>> from spatialdata.files_manager import IntervalFolderManager
+    >>> from ag_cube_cm.ingestion.files_manager import IntervalFolderManager
     >>> cube = MLTWeatherDataCube(
     ...     directory_paths={"tmax": "data/raw/tmax", "tmin": "data/raw/tmin"},
     ...     folder_manager=IntervalFolderManager(),
