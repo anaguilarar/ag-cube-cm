@@ -107,11 +107,16 @@ class DSSATModel(CropModel):
                 self._nyers = int(cfg_nyers)
             else:
                 planting_date_val = getattr(self.config.MANAGEMENT, 'planting_date', None)
-                planting_year = datetime.strptime(
+                pdate_dt = datetime.strptime(
                     str(planting_date_val) if planting_date_val else '2000-01-01', '%Y-%m-%d'
-                ).year
+                )
+                planting_year = pdate_dt.year
                 last_wth_year = int(pd.to_datetime(df_wth['date']).dt.year.max())
-                self._nyers = max(1, last_wth_year - planting_year + 1)
+                # If harvest (~200 days after planting) crosses into the next calendar year,
+                # the last simulated season would need weather past last_wth_year — drop it.
+                harvest_crosses_year = (pdate_dt + timedelta(days=200)).year > pdate_dt.year
+                nyers_raw = last_wth_year - planting_year + 1
+                self._nyers = max(1, nyers_raw - (1 if harvest_crosses_year else 0))
 
         if not df_sol.empty:
             self._write_sol(df_sol, lat, lon)
@@ -482,22 +487,28 @@ class DSSATModel(CropModel):
         cmd = [bin_path, "C", self.exp_filename, "1"]
 
         try:
+            # Inherit the full parent environment so PATH / LD_LIBRARY_PATH / HOME
+            # are available on Linux; only override DSSAT_HOME.
+            run_env = os.environ.copy()
+            run_env["DSSAT_HOME"] = str(dssat_home)
+
             result = subprocess.run(
                 cmd,
                 cwd=str(self.working_dir),
                 capture_output=True,
                 text=True,
-                env={"DSSAT_HOME": str(dssat_home)},
+                env=run_env,
             )
             logger.debug("[Pixel %s] DSSAT stdout: %s", self.pixel_id, result.stdout[-500:])
             summary = self.working_dir / "Summary.OUT"
             if not summary.exists():
                 # Crop failure (rc=3) or other non-fatal DSSAT result —
                 # collect_outputs will return {} and the caller treats it as NaN yield.
+                last_lines = result.stdout.strip().splitlines()
+                diag = " | ".join(last_lines[-3:]) if last_lines else "no output"
                 logger.warning(
                     "[Pixel %s] DSSAT finished without Summary.OUT (rc=%d): %s",
-                    self.pixel_id, result.returncode,
-                    result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "no output",
+                    self.pixel_id, result.returncode, diag,
                 )
             else:
                 logger.debug("[Pixel %s] DSSAT executed successfully.", self.pixel_id)
