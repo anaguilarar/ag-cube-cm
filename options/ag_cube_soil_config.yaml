@@ -1,0 +1,43 @@
+# =============================================================================
+# options/soil_data_downloading_config.yaml
+# ag-cube-cm — Soil download / datacube configuration
+#
+# Replaces the legacy soil_data_downloading_config.yaml.
+# All top-level keys are identical to the legacy format.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Spatial extent for the download.
+# Use 'boundaries' (shapefile path) or add an 'extent' list directly.
+# ---------------------------------------------------------------------------
+SPATIAL_INFO:
+  #boundaries: "data/country.shp"   # shapefile path; set to null to use extent
+  extent: [119, 4.5869, 126.5, 18.5]   # [xmin, ymin, xmax, ymax] fallback
+  crs: "ESRI:54052"                # CRS for bounding-box reprojection
+
+# ---------------------------------------------------------------------------
+# Soil variables and depth layers to download from SoilGrids.
+#
+# Standard physical/chemical vars (250 m WCS):
+#   clay, sand, silt, bdod, cfvo, nitrogen, phh2o, soc, cec
+# Hydraulic vars (1 km Google Storage):
+#   wv0010, wv0033, wv1500
+# ---------------------------------------------------------------------------
+SOIL:
+  variables: ["wv0010", "wv0033", "wv1500"]
+  # variables: ["clay", "sand", "silt", "wv0010", "cec", "wv0033", "wv1500"]
+  depths:    ["0-5", "5-15", "15-30", "30-60"]
+  mission:   soilgrids
+
+# ---------------------------------------------------------------------------
+# General settings
+# task: 'download'  → download raw GeoTIFF files to disk
+# task: 'datacube'  → stack downloaded files into a multi-depth NetCDF cube
+# ---------------------------------------------------------------------------
+GENERAL:
+  suffix: "hnd"          # appended to output folder / file names
+  task:   "download"     # "download" | "datacube"
+
+PATHS:
+  output_path:  "soil/"
+  datacube_fn:  null     # override output filename; null → auto-generated

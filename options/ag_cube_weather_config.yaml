@@ -1,0 +1,94 @@
+# =============================================================================
+# options/weather_data_downloading_config.yaml
+# ag-cube-cm — Weather download / datacube configuration
+#
+# Replaces the legacy weather_data_downloading_config.yaml.
+# All keys are identical to the legacy format so existing configs
+# continue to work without modification.
+# =============================================================================
+
+DATES:
+  starting_date: "2023-01-01"
+  ending_date:   "2024-12-31"
+
+# ---------------------------------------------------------------------------
+# Weather variables to download.
+# Keys must match one of the variable names understood by
+# WeatherDownloadOrchestrator (see ag_cube_cm/ingestion/weather.py).
+# Each entry must provide 'mission' and 'source'.
+# ---------------------------------------------------------------------------
+WEATHER:
+  variables:
+  
+    precipitation:
+      mission: chirps
+      source:  chirps
+
+    solar_radiation:
+      mission: agera5
+      source:  agera5
+
+    temperature_tmax:
+      mission: agera5
+      source:  agera5
+
+    temperature_tmin:
+      mission: agera5
+      source:  agera5
+
+    vapour_pressure_defficit:
+      mission: agera5
+      source:  agera5
+
+    dew_point_temperature:
+      mission: agera5
+      source:  agera5
+
+    reference_evapotranspiration:
+      mission: agera5
+      source:  agera5
+
+    relative_humidity_06:
+      mission: agera5
+      source:  agera5
+
+    relative_humidity_09:
+      mission: agera5
+      source:  agera5
+
+    relative_humidity_12:
+      mission: agera5
+      source:  agera5
+
+    relative_humidity_15:
+      mission: agera5
+      source:  agera5
+
+    relative_humidity_18:
+      mission: agera5
+      source:  agera5
+
+# ---------------------------------------------------------------------------
+# Spatial extent for the download.
+# Use either 'spatial_file' (shapefile path) or 'extent' ([xmin,ymin,xmax,ymax]).
+# If spatial_file is given it takes priority over extent.
+# ---------------------------------------------------------------------------
+SPATIAL_INFO:
+  spatial_file: null                   # e.g. "data/country_HND_ADM2.shp"
+  extent: [119, 5, 126.5, 18.8]   # [xmin, ymin, xmax, ymax] EPSG:4326 — small test extent
+
+# ---------------------------------------------------------------------------
+# General settings
+# task: 'download'  → download raw yearly zip/NetCDF files to disk
+# task: 'datacube'  → stack downloaded files into a single multi-temporal cube
+# ---------------------------------------------------------------------------
+GENERAL:
+  suffix:             "philippines"   # appended to folder/file names
+  ncores:             4             # parallel download threads — keep <= 2 for CHIRPS (CrowdSec)
+  task:               "datacube"    # "download" | "datacube"
+  reference_variable: "precipitation"  # spatial reference for co-registration
+  export_as_netcdf:   false         # stack to .nc immediately after download
+  agera5_version:     "2_0"        # AgEra5 product version "1_1" | "2_0"
+
+PATHS:
+  output_path: "weather/"

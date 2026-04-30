@@ -1,0 +1,70 @@
+# ---- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+MANIFEST
+
+# ---- Virtual environments --------------------------------------------------
+.venv/
+venv/
+env/
+.conda/
+
+# ---- Testing & coverage ---------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+*.coveragerc
+
+# ---- Type checking ---------------------------------------------------------
+.mypy_cache/
+.ruff_cache/
+
+# ---- IDEs ------------------------------------------------------------------
+.vscode/
+.idea/
+*.iml
+*.code-workspace
+
+# ---- Jupyter ---------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb
+
+# ---- Data & outputs (not part of the package) ------------------------------
+weather/
+data_test/
+tmp*/
+output_*.nc
+dssat_err.txt
+dssat_out.txt
+*.tif
+*.tiff
+*.shp
+*.dbf
+*.shx
+*.prj
+*.cpg
+*.geojson
+*.zip
+*.gz
+*.h5
+*.hdf5
+
+# ---- OS --------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- dotenv / secrets ------------------------------------------------------
+.env
+.env.*
+*.pem
+*.key

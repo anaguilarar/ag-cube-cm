@@ -1,0 +1,214 @@
+# =============================================================================
+# pyproject.toml — ag-cube-cm
+#
+# Modern PEP 517/518/621-compliant build configuration for the ag-cube-cm
+# package. Uses setuptools as the build backend and defines all project
+# metadata, runtime dependencies, optional extras, and CLI entry points.
+# =============================================================================
+
+[build-system]
+requires      = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+# ---------------------------------------------------------------------------
+# [project] — Core metadata (PEP 621)
+# ---------------------------------------------------------------------------
+[project]
+name        = "ag-cube-cm"
+version     = "0.1.0"
+description = "Spatial NetCDF datacube processing and process-based crop model orchestration (DSSAT, CAF2021, SIMPLE, Banana-N)."
+readme      = "README.md"
+license     = "MIT"
+requires-python = ">=3.10"
+
+authors = [
+    { name = "Andres Aguilar", email = "andres.aguilar@cgiar.org" },
+]
+
+keywords = [
+    "crop-model", "dssat", "caf2021", "agera5", "soilgrids",
+    "xarray", "dask", "spatial", "netcdf", "geospatial",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+
+# ---------------------------------------------------------------------------
+# Runtime dependencies
+# ---------------------------------------------------------------------------
+dependencies = [
+    # --- Spatial / raster ---
+    "xarray>=2024.1.0",
+    "dask[array]>=2024.1.0",
+    "netCDF4>=1.6.5",
+    "rioxarray>=0.15.0",
+    "rasterio>=1.3.9",
+    "geopandas>=1.0.0",
+    "shapely>=2.0.0",
+
+    # --- Configuration & validation ---
+    "pydantic>=2.0.0",
+    "omegaconf>=2.3.0",
+    "PyYAML>=6.0",
+
+    # --- CLI ---
+    "click>=8.1.0",
+
+    # --- Numerical ---
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "scipy>=1.12.0",
+
+    # --- Utilities ---
+    "tqdm>=4.66.0",
+    "requests>=2.33",
+    "unidecode>=1.3.0",
+]
+
+
+# ---------------------------------------------------------------------------
+# Optional dependency groups
+# ---------------------------------------------------------------------------
+[project.optional-dependencies]
+
+# Full crop-model support (heavy extras kept optional)
+models = [
+    "DSSATTools==2.1.6",
+    "rosetta-soil>=0.1.1",
+    "fortranformat>=1.2.2",
+    "numba>=0.60.0",
+    "bayesian-optimization>=2.0.0",
+]
+
+# Data download support (requires CDS API key configured separately)
+download = [
+    "cdsapi>=0.7.0",
+    "Requests>=2.31.0",
+    "soilgrids>=0.1.4",
+]
+
+# Visualisation
+viz = [
+    "matplotlib>=3.9.0",
+    "plotly>=5.20.0",
+]
+
+# Developer toolchain
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.9.0",
+    "pre-commit>=3.7.0",
+    "build>=1.2.0",
+    "twine>=5.0.0",
+]
+
+# Documentation
+docs = [
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=2.0.0",
+    "myst-parser>=3.0.0",
+]
+
+# Convenience meta-extra: everything
+all = [
+    "ag-cube-cm[models,download,viz,dev,docs]",
+]
+
+
+# ---------------------------------------------------------------------------
+# CLI entry points
+# ---------------------------------------------------------------------------
+[project.scripts]
+ag-cube = "ag_cube_cm.cli:cli"
+
+
+# ---------------------------------------------------------------------------
+# Project URLs
+# ---------------------------------------------------------------------------
+[project.urls]
+Homepage      = "https://github.com/anaguilarar/ag-cube-cm"
+Repository    = "https://github.com/anaguilarar/ag-cube-cm"
+"Bug Tracker" = "https://github.com/anaguilarar/ag-cube-cm/issues"
+
+
+# ---------------------------------------------------------------------------
+# setuptools — package discovery
+# ---------------------------------------------------------------------------
+[tool.setuptools]
+zip-safe    = false
+
+[tool.setuptools.packages.find]
+where   = ["src"]
+include = ["ag_cube_cm*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+ag_cube_cm = [
+    "py.typed",       # PEP 561 marker
+    "**/*.yaml",      # bundled example configs
+    "**/*.yml",
+]
+
+
+# ---------------------------------------------------------------------------
+# Ruff — linting & formatting
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length    = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "ANN", "B"]
+ignore = [
+    "ANN101",  # Missing type annotation for self
+    "ANN102",  # Missing type annotation for cls
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ag_cube_cm"]
+
+
+# ---------------------------------------------------------------------------
+# MyPy — static type checking
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version          = "3.10"
+strict                  = true
+ignore_missing_imports  = true
+warn_return_any         = true
+warn_unused_configs     = true
+disallow_untyped_defs   = true
+
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths    = ["tests"]
+python_files = ["test_*.py"]
+addopts      = "-v --tb=short --cov=ag_cube_cm --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src"]
+omit   = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
