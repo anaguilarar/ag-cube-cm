@@ -237,6 +237,8 @@ def generate_config(
     ncores: int = 4,
     fertilizer_n_kg_ha: float = 0.0,
     fertilizer_p_kg_ha: float = 0.0,
+    feature: str | None = None,
+    adm_level: int = 2,
     save_to: str | None = None,
 ) -> str:
     """Generate and optionally save a simulation YAML config file.
@@ -259,6 +261,9 @@ def generate_config(
     ncores : int            Parallel threads.
     fertilizer_n_kg_ha : float  N applied at planting (kg/ha). 0 = no fertilizer.
     fertilizer_p_kg_ha : float  P applied at planting (kg/ha).
+    feature : str | None    Admin unit to restrict the simulation to
+                            (e.g. 'Zomba', 'Comayagua').  None = full country.
+    adm_level : int         Admin level for the feature boundary (default 2).
     save_to : str | None    If given, writes the YAML to this file path.
 
     Returns
@@ -280,6 +285,10 @@ def generate_config(
             else "  dssat_path: null\n"
         )
 
+        feature_line = (
+            f"  feature: '{feature}'\n" if feature else "  feature: null\n"
+        )
+
         yaml_text = (
             f"GENERAL_INFO:\n"
             f"  country: '{country}'\n"
@@ -291,6 +300,8 @@ def generate_config(
             f"\n"
             f"SPATIAL_INFO:\n"
             f"  feature_name: 'shapeName'\n"
+            f"  adm_level: {adm_level}\n"
+            f"{feature_line}"
             f"  soil_path: '{soil_path}'\n"
             f"  weather_path: '{weather_path}'\n"
             f"  output_path: '{output_path}'\n"
@@ -320,13 +331,55 @@ def generate_config(
 
 
 # ---------------------------------------------------------------------------
-# Tool 4 — run_simulation
+# Tool 4 — list_admin_units
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_admin_units(
+    country_code: str,
+    adm_level: int = 2,
+) -> str:
+    """List all administrative unit names for a country at a given level.
+
+    Useful for discovering valid values for the *feature* parameter of
+    run_simulation and generate_config before running a simulation.
+
+    Parameters
+    ----------
+    country_code : str
+        ISO 3166-1 alpha-3 code (e.g. 'MWI', 'HND', 'COL').
+    adm_level : int
+        Administrative level.  1 = region/province, 2 = district/department
+        (default), 3 = sub-district.
+
+    Returns
+    -------
+    JSON with status, country_code, adm_level, count, and sorted list of names.
+    """
+    try:
+        from ag_cube_cm.ingestion.boundaries import list_admin_units as _list
+
+        names = _list(country_code, adm_level=adm_level)
+        return _ok({
+            "country_code": country_code.upper(),
+            "adm_level": adm_level,
+            "count": len(names),
+            "units": names,
+        })
+    except Exception as exc:
+        return _err(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
+
+
+# ---------------------------------------------------------------------------
+# Tool 5 — run_simulation
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
 def run_simulation(
     config_path: str,
     max_pixels: int | None = None,
+    feature: str | None = None,
+    adm_level: int = 2,
 ) -> str:
     """Run a spatial crop model simulation from a YAML config file.
 
@@ -338,6 +391,13 @@ def run_simulation(
     max_pixels : int | None
         Optional cap on number of pixels to simulate (useful for quick tests).
         None = run all land pixels.
+    feature : str | None
+        Admin unit name to restrict the simulation to (e.g. 'Zomba', 'Comayagua').
+        Overrides the feature set in the config file.  None = use the entire
+        country bounding box from the config.
+    adm_level : int
+        Administrative level for the feature boundary lookup.
+        1 = region/province, 2 = district/department (default), 3 = sub-district.
 
     Returns
     -------
@@ -358,6 +418,20 @@ def run_simulation(
         cfg = load_config(config_path)
         weather_ds = xr.open_dataset(cfg.SPATIAL_INFO.weather_path)
         soil_ds    = xr.open_dataset(cfg.SPATIAL_INFO.soil_path)
+
+        # Clip to admin boundary if requested (via parameter or config)
+        effective_feature = feature or cfg.SPATIAL_INFO.feature
+        if effective_feature:
+            from ag_cube_cm.ingestion.boundaries import get_admin_boundary
+            from ag_cube_cm.spatial.raster_ops import get_roi_data
+
+            effective_adm = adm_level if feature else cfg.SPATIAL_INFO.adm_level
+            boundary_gdf = get_admin_boundary(
+                cfg.GENERAL_INFO.country_code, effective_feature,
+                adm_level=effective_adm,
+            )
+            weather_ds = get_roi_data(weather_ds, boundary_gdf)
+            soil_ds    = get_roi_data(soil_ds,    boundary_gdf)
 
         base_pdate = cfg.MANAGEMENT.planting_date
         n_windows  = cfg.MANAGEMENT.n_planting_windows or 1
@@ -485,7 +559,7 @@ def run_simulation(
 
 
 # ---------------------------------------------------------------------------
-# Tool 5 — list_crops  (informational)
+# Tool 6 — list_supported_crops  (informational)
 # ---------------------------------------------------------------------------
 
 @mcp.tool()

@@ -177,6 +177,25 @@ if __name__ == "__main__":
     print(f"  Weather : {dict(weather_ds.sizes)}  vars={list(weather_ds.data_vars)}")
     print(f"  Soil    : {dict(soil_ds.sizes)}  vars={list(soil_ds.data_vars)}")
 
+    # ------------------------------------------------------------------
+    # Optional: clip to a specific admin unit (e.g. a district/department)
+    # ------------------------------------------------------------------
+    feature = cfg.SPATIAL_INFO.feature
+    if feature:
+        from ag_cube_cm.ingestion.boundaries import get_admin_boundary
+        from ag_cube_cm.spatial.raster_ops import get_roi_data
+
+        adm_level = cfg.SPATIAL_INFO.adm_level
+        country_code = cfg.GENERAL_INFO.country_code
+        print(f"\nClipping to admin boundary: {feature} "
+              f"({country_code} ADM{adm_level})...")
+        boundary_gdf = get_admin_boundary(country_code, feature, adm_level=adm_level)
+        print(f"  Boundary bbox: {[round(v, 4) for v in boundary_gdf.total_bounds.tolist()]}")
+        weather_ds = get_roi_data(weather_ds, boundary_gdf)
+        soil_ds    = get_roi_data(soil_ds,    boundary_gdf)
+        print(f"  Weather (clipped): {dict(weather_ds.sizes)}")
+        print(f"  Soil    (clipped): {dict(soil_ds.sizes)}")
+
     # Planting windows
     planting_dates = build_planting_dates(cfg)
     n_windows      = len(planting_dates)

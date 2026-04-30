@@ -187,10 +187,34 @@ Claude:  [calls download_weather]  → weather_mwi.nc downloaded (7305 days)
 | Tool | What it does |
 |------|-------------|
 | `list_supported_crops` | Lists all supported crops and example cultivar IDs |
+| `list_admin_units` | Lists districts/departments for a country (to discover valid region names) |
 | `download_weather` | Downloads AgERA5 or CHIRPS weather → single NetCDF datacube |
 | `download_soil` | Downloads SoilGrids soil layers → GeoTIFF / NetCDF |
-| `generate_config` | Generates and saves a simulation YAML config |
-| `run_simulation` | Runs the crop model on all pixels × planting windows |
+| `generate_config` | Generates and saves a simulation YAML config (supports `feature` for sub-country area) |
+| `run_simulation` | Runs the crop model on pixels × planting windows (supports `feature` to restrict to one district) |
+
+### Sub-country simulations (district / department level)
+
+Running a full country can be expensive (thousands of pixels). You can restrict a run to
+a single administrative unit — a district, department, or province — by specifying `feature`:
+
+```
+You:     Simulate maize in Zomba district, Malawi, 2000-2019.
+
+Claude:  [calls list_admin_units(country_code="MWI", adm_level=2)]
+         → ['Balaka', 'Blantyre', 'Chikwawa', ..., 'Zomba']
+
+         [calls generate_config(..., feature="Zomba", adm_level=2)]
+         → zomba.yaml created (SPATIAL_INFO.feature = 'Zomba')
+
+         [calls run_simulation(config_path="zomba.yaml")]
+         → boundary downloaded from GeoBoundaries, datasets clipped to Zomba polygon
+         → 47 pixels × 6 windows running...
+```
+
+The boundary polygon is fetched automatically from the
+[GeoBoundaries API](https://www.geoboundaries.org) — no local shapefile needed.
+This typically reduces pixel count by 10–100× compared to a full-country run.
 
 ### Start the server manually
 
@@ -205,7 +229,7 @@ python -m ag_cube_cm.mcp_server
 ```
 src/ag_cube_cm/
 ├── config/          Pydantic v2 SimulationConfig — YAML validation
-├── ingestion/       AgERA5Downloader, CHIRPSDownloader, SoilGridsDownloader
+├── ingestion/       AgERA5Downloader, CHIRPSDownloader, SoilGridsDownloader, get_admin_boundary
 ├── models/
 │   ├── base.py      CropModel ABC
 │   ├── dssat/       DSSATModel — Fortran file writers, subprocess runner
