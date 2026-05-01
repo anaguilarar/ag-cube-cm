@@ -164,11 +164,11 @@ def download_weather(
             }
         else:
             variables = {
-                "temperature_2m_max":       {"mission": "agera5", "source": "agera5"},
-                "temperature_2m_min":       {"mission": "agera5", "source": "agera5"},
-                "solar_radiation_flux":     {"mission": "agera5", "source": "agera5"},
-                "precipitation_flux":       {"mission": "agera5", "source": "agera5"},
-                "wind_speed":               {"mission": "agera5", "source": "agera5"},
+                "temperature_tmax": {"mission": "agera5", "source": "agera5"},
+                "temperature_tmin": {"mission": "agera5", "source": "agera5"},
+                "solar_radiation":  {"mission": "agera5", "source": "agera5"},
+                "precipitation":    {"mission": "chirps",  "source": "chirps"},
+                "wind_speed":       {"mission": "agera5", "source": "agera5"},
             }
 
         # export_as_netcdf=False: keep raw zip files on disk; the weather
