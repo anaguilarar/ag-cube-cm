@@ -31,6 +31,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -565,13 +566,19 @@ class CHIRPSDownloader:
         starting_date: str,
         ending_date: str,
         output_folder: str,
-        ncores: int = 4,
+        ncores: int = 6,
+        polite_delay: float = 0.1,
     ) -> dict[str, str]:
         """Download CHIRPS data for the given extent and date range.
 
-        Parallelism is at the **year** level: each thread downloads all days
-        of one year sequentially.  This avoids server-side rate-limit issues
-        while still achieving meaningful throughput for multi-year requests.
+        All (year, month, day) jobs are flattened into a single queue and
+        processed by a ``ThreadPoolExecutor`` with ``ncores`` workers.  This
+        gives true day-level parallelism across years while keeping the total
+        number of concurrent HTTP connections low enough to avoid CrowdSec
+        rate-limiting on ``data.chc.ucsb.edu``.
+
+        Each worker sleeps ``polite_delay`` seconds after every completed
+        request to stagger bursts and stay within polite request-rate limits.
 
         Parameters
         ----------
@@ -582,9 +589,13 @@ class CHIRPSDownloader:
         ending_date : str
             ISO 8601 end date ``"YYYY-MM-DD"``.
         output_folder : str
-            Root folder; one sub-folder per year is created.
+            Root folder; one sub-folder per year is created automatically.
         ncores : int
-            Parallel year-threads.  ``0`` → sequential.  Default: 4.
+            Maximum concurrent day-downloads.  Default: 6.  Keep ≤ 8 to
+            avoid triggering server-side rate limits.  ``0`` → sequential.
+        polite_delay : float
+            Seconds each worker sleeps after completing a request.
+            Default: 0.1 s.  Set to 0 to disable.
 
         Returns
         -------
@@ -594,35 +605,36 @@ class CHIRPSDownloader:
         Path(output_folder).mkdir(parents=True, exist_ok=True)
         yearly_dates = create_yearly_query(starting_date, ending_date)
 
-        # Pre-create year folders and count total days for the progress bar.
+        # Pre-create year folders and build flat job list.
         year_folders: dict[str, str] = {}
-        total_days = 0
+        jobs: list[tuple[str, str, str]] = []
         for year, monthly_dates in yearly_dates.items():
             year_folder = os.path.join(output_folder, year)
             Path(year_folder).mkdir(parents=True, exist_ok=True)
             year_folders[year] = year_folder
-            for days in monthly_dates.values():
-                total_days += len(days)
+            for month, days in monthly_dates.items():
+                for day in days:
+                    jobs.append((year, month, day))
 
-        pbar = tqdm(total=total_days, desc="CHIRPS precipitation", unit="day")
+        pbar = tqdm(total=len(jobs), desc="CHIRPS precipitation", unit="day")
+
+        def _run(job: tuple[str, str, str]) -> None:
+            year, month, day = job
+            try:
+                self._download_one_day(year, month, day, output_folder, extent)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed %s-%s-%s: %s", year, month, day, exc)
+            finally:
+                pbar.update(1)
+            if polite_delay > 0:
+                time.sleep(polite_delay)
 
         if ncores > 0:
             with concurrent.futures.ThreadPoolExecutor(max_workers=ncores) as pool:
-                future_map = {
-                    pool.submit(
-                        self._download_one_year, year, monthly_dates, output_folder, extent, pbar
-                    ): year
-                    for year, monthly_dates in yearly_dates.items()
-                }
-                for future in concurrent.futures.as_completed(future_map):
-                    year = future_map[future]
-                    try:
-                        future.result()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("Year %s download error: %s", year, exc)
+                list(pool.map(_run, jobs))
         else:
-            for year, monthly_dates in yearly_dates.items():
-                self._download_one_year(year, monthly_dates, output_folder, extent, pbar)
+            for job in jobs:
+                _run(job)
 
         pbar.close()
         return year_folders

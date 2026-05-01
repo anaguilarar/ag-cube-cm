@@ -52,6 +52,34 @@ def _country_bbox(country_code: str, adm_level: int = 0) -> list[float]:
             round(float(b[2]), 4), round(float(b[3]), 4)]
 
 
+def _feature_bbox(
+    country_code: str,
+    feature_name: str,
+    adm_level: int = 2,
+    buffer_m: float = 8000.0,
+) -> list[float]:
+    """Return [xmin, ymin, xmax, ymax] (WGS84, 1-decimal) for a buffered admin feature.
+
+    Projects the feature polygon to ESRI:54052 (SoilGrids / Homolosine, metres),
+    applies a metric buffer, then reprojects the bounding box back to EPSG:4326.
+    Coordinates are rounded to 1 decimal place (~11 km precision at the equator),
+    which comfortably covers the ~5 km target resolution.
+    """
+    from ag_cube_cm.ingestion.boundaries import get_admin_boundary
+    from pyproj import Transformer
+
+    gdf = get_admin_boundary(country_code, feature_name, adm_level=adm_level)
+    gdf_proj = gdf.to_crs("ESRI:54052")
+    gdf_proj = gdf_proj.copy()
+    gdf_proj["geometry"] = gdf_proj.buffer(buffer_m)
+    xmin, ymin, xmax, ymax = gdf_proj.total_bounds  # metres in ESRI:54052
+
+    tr = Transformer.from_crs("ESRI:54052", "EPSG:4326", always_xy=True)
+    lon_min, lat_min = tr.transform(xmin, ymin)
+    lon_max, lat_max = tr.transform(xmax, ymax)
+    return [round(lon_min, 1), round(lat_min, 1), round(lon_max, 1), round(lat_max, 1)]
+
+
 def _ok(payload: Any) -> str:
     return json.dumps({"status": "ok", **payload}, default=str)
 
@@ -72,8 +100,10 @@ def download_weather(
     source: str = "agera5",
     output_folder: str | None = None,
     bbox: list[float] | None = None,
+    feature: str | None = None,
+    adm_level: int = 2,
 ) -> str:
-    """Download weather data for a country and merge into a single NetCDF datacube.
+    """Download weather data for a region and store raw zip files for datacube processing.
 
     Parameters
     ----------
@@ -85,15 +115,23 @@ def download_weather(
         'agera5' (temperature, solar radiation, wind, humidity) or
         'chirps' (rainfall only). Default 'agera5'.
     output_folder : str | None
-        Where to save downloaded files and the final NetCDF.
+        Where to save downloaded zip files.
         Defaults to '<tempdir>/ag_cube_cm/<country_code>/weather'.
     bbox : list[float] | None
-        [xmin, ymin, xmax, ymax] override. Auto-fetched from GeoBoundaries
-        when omitted.
+        [xmin, ymin, xmax, ymax] override in WGS84. When omitted:
+        - uses the buffered feature extent if *feature* is given, or
+        - falls back to the full country bounding box.
+    feature : str | None
+        Admin unit name to restrict the download to (e.g. 'Mwanza', 'Zomba').
+        The feature polygon is buffered by 8 km in the SoilGrids Homolosine
+        projection and reprojected back to WGS84 (1-decimal precision) to
+        define the download extent.
+    adm_level : int
+        Administrative level for the feature lookup (default 2 = district).
 
     Returns
     -------
-    JSON with status, output_path, and dataset dimensions.
+    JSON with status, output_folder, bbox used, and file count.
     """
     try:
         from ag_cube_cm.ingestion.weather import WeatherDownloadOrchestrator
@@ -105,7 +143,10 @@ def download_weather(
         Path(output_folder).mkdir(parents=True, exist_ok=True)
 
         if bbox is None:
-            bbox = _country_bbox(country_code)
+            if feature:
+                bbox = _feature_bbox(country_code, feature, adm_level=adm_level)
+            else:
+                bbox = _country_bbox(country_code)
 
         starting_date = f"{year_start}-01-01"
         ending_date   = f"{year_end}-12-31"
@@ -130,19 +171,22 @@ def download_weather(
                 "wind_speed":               {"mission": "agera5", "source": "agera5"},
             }
 
-        results = orch.download(variables, export_as_netcdf=True)
+        # export_as_netcdf=False: keep raw zip files on disk; the weather
+        # datacube builder (MLTWeatherDataCube) reads directly from zips via
+        # IntervalFolderManager, so creating intermediate per-year .nc files
+        # would be redundant and would delete the zips after stacking.
+        results = orch.download(variables, export_as_netcdf=False)
 
-        nc_files = [v for vdict in results.values() for v in vdict.values()
-                    if str(v).endswith(".nc")]
-        output_path = nc_files[0] if nc_files else output_folder
+        all_files = [v for vdict in results.values() for v in vdict.values()]
 
         return _ok({
-            "output_path": output_path,
+            "output_folder": output_folder,
             "country_code": country_code,
+            "feature": feature,
             "bbox": bbox,
             "year_range": [year_start, year_end],
             "source": source,
-            "files_downloaded": len(nc_files),
+            "files_downloaded": len(all_files),
         })
     except Exception as exc:
         return _err(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
@@ -159,6 +203,8 @@ def download_soil(
     bbox: list[float] | None = None,
     depths: list[str] | None = None,
     variables: list[str] | None = None,
+    feature: str | None = None,
+    adm_level: int = 2,
 ) -> str:
     """Download SoilGrids data and merge into a multi-depth NetCDF datacube.
 
@@ -173,12 +219,21 @@ def download_soil(
         Where to save downloaded files and the final NetCDF.
         Defaults to '<tempdir>/ag_cube_cm/<country_code>/soil'.
     bbox : list[float] | None
-        [xmin, ymin, xmax, ymax] override.  Auto-fetched when omitted.
+        [xmin, ymin, xmax, ymax] override in WGS84. When omitted:
+        - uses the buffered feature extent if *feature* is given, or
+        - falls back to the full country bounding box.
     depths : list[str] | None
         Depth intervals. Defaults to ["0-5", "5-15", "15-30", "30-60", "60-100"].
     variables : list[str] | None
         SoilGrids variables. Defaults to the standard DSSAT set:
         clay, sand, silt, bdod, cfvo, nitrogen, phh2o, soc, wv0010, wv0033, wv1500.
+    feature : str | None
+        Admin unit name to restrict the download to (e.g. 'Mwanza', 'Zomba').
+        The feature polygon is buffered by 8 km in the SoilGrids Homolosine
+        projection and reprojected back to WGS84 (1-decimal precision) to
+        define the download extent.
+    adm_level : int
+        Administrative level for the feature lookup (default 2 = district).
 
     Returns
     -------
@@ -198,7 +253,10 @@ def download_soil(
             variables = ["clay", "sand", "silt", "bdod", "cfvo",
                          "nitrogen", "phh2o", "soc", "wv0010", "wv0033", "wv1500"]
         if bbox is None:
-            bbox = _country_bbox(country_code)
+            if feature:
+                bbox = _feature_bbox(country_code, feature, adm_level=adm_level)
+            else:
+                bbox = _country_bbox(country_code)
 
         # Step 1 — purge any previously-downloaded wv* files that are 1×1 pixels
         # (a known corruption from the old hardcoded ÷250 height/width formula).
