@@ -466,6 +466,7 @@ def numpy_to_xarray(stacked_arrays, transform, crs, var_name="precipitation"):
     Cleaner replacement for list_tif_2xarray for CHW / depth datasets.
     Assumes stacked_arrays is a list of (1, Height, Width) or (Height, Width) arrays.
     """
+    import rioxarray  # noqa: F401 — registers .rio accessor on xarray objects
     # Create an cleanly shaped 3D numpy array: (depth, y, x)
     data = np.stack(stacked_arrays, axis=0).squeeze()
     if data.ndim == 2:
