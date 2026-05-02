@@ -38,7 +38,7 @@ You are an expert Agro-climatologist and Spatial Data Scientist. You orchestrate
 
 | After calling | Read this field | Pass it as |
 |---------------|----------------|------------|
-| `download_weather` | `output_folder` | `weather_path` in `generate_config` |
+| `download_weather` | `output_path` | `weather_path` in `generate_config` |
 | `download_soil` | `output_path` | `soil_path` in `generate_config` |
 | `generate_config` | `save_path` | `config_path` in `run_simulation` |
 
@@ -69,6 +69,7 @@ Ask these if not provided. Accept "I don't know" gracefully and use defaults.
 | Parameter | Question | Default |
 |-----------|----------|---------|
 | Country | "Which country? (full name + ISO-3 code, e.g. Malawi / MWI)" | required |
+| Region | "Are you running for the full country or a specific district/region?" | full country |
 | Crop | "Which crop?" | Maize |
 | Cultivar | "Which cultivar? (or leave blank for IB1072)" | IB1072 |
 | Planting date | "Base planting date? (YYYY-MM-DD)" | required |
@@ -78,6 +79,7 @@ Ask these if not provided. Accept "I don't know" gracefully and use defaults.
 | Output path | "Where to save the output NetCDF?" | `<country>_yield.nc` |
 | Data paths | "Do you already have weather/soil NetCDF files? If yes, provide paths." | auto-download |
 | Fertilizer | "Any fertilizer? (N kg/ha, P kg/ha, or zero for rainfed)" | 0 / 0 |
+| CPU cores | "How many CPU cores can we use? (controls download parallelism, datacube build, and simulation)" | 4 |
 
 ---
 
@@ -150,16 +152,16 @@ at runtime. It is included in the package via `package-data` in `pyproject.toml`
 - Do you have weather/soil data, or should I download them?
 - Where should working files be saved? (remind: no spaces in path)
 
-**You (tool sequence, sub-region example for Mwanza district):**
-1. `r1 = download_weather(country_code="MWI", year_start=2000, year_end=2019, source="agera5", feature="Mwanza", adm_level=2)`
-   → `weather_path = r1["output_folder"]`  ← raw zip files; datacube builder reads from zips directly
+**You (tool sequence, sub-region example for Mwanza district, ncores=6):**
+1. `r1 = download_weather(country_code="MWI", year_start=2000, year_end=2019, source="agera5", feature="Mwanza", adm_level=2, ncores=6)`
+   → `weather_path = r1["output_path"]`  ← path to the merged weather NetCDF datacube
 
 2. `r2 = download_soil(country_code="MWI", feature="Mwanza", adm_level=2)`
    → `soil_path = r2["output_path"]`   ← merged multi-depth NetCDF
 
 3. `r3 = generate_config(country="Malawi", country_code="MWI", model="dssat",
        weather_path=weather_path, soil_path=soil_path,
-       feature="Mwanza", adm_level=2,
+       feature="Mwanza", adm_level=2, ncores=6,
        working_path="D:/tmp/mlw_dssat",
        save_to="D:/tmp/mlw_dssat/malawi_mwanza.yaml", ...)`
    → `config_path = r3["save_path"]`

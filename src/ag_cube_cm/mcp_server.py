@@ -102,8 +102,9 @@ def download_weather(
     bbox: list[float] | None = None,
     feature: str | None = None,
     adm_level: int = 2,
+    ncores: int = 4,
 ) -> str:
-    """Download weather data for a region and store raw zip files for datacube processing.
+    """Download weather data for a region and build a multi-temporal NetCDF datacube.
 
     Parameters
     ----------
@@ -115,7 +116,7 @@ def download_weather(
         'agera5' (temperature, solar radiation, wind, humidity) or
         'chirps' (rainfall only). Default 'agera5'.
     output_folder : str | None
-        Where to save downloaded zip files.
+        Where to save downloaded zip files and the final NetCDF.
         Defaults to '<tempdir>/ag_cube_cm/<country_code>/weather'.
     bbox : list[float] | None
         [xmin, ymin, xmax, ymax] override in WGS84. When omitted:
@@ -128,10 +129,14 @@ def download_weather(
         define the download extent.
     adm_level : int
         Administrative level for the feature lookup (default 2 = district).
+    ncores : int
+        Parallel workers used for both the CHIRPS day-downloads and the
+        datacube stacking step.  Default 4.  Match to your CPU count for
+        best throughput; keep ≤ 8 for CHIRPS to avoid server rate limits.
 
     Returns
     -------
-    JSON with status, output_folder, bbox used, and file count.
+    JSON with status, output_path (the NetCDF datacube), output_folder, bbox, and file count.
     """
     try:
         from ag_cube_cm.ingestion.weather import WeatherDownloadOrchestrator
@@ -171,15 +176,38 @@ def download_weather(
                 "wind_speed":       {"mission": "agera5", "source": "agera5"},
             }
 
-        # export_as_netcdf=False: keep raw zip files on disk; the weather
-        # datacube builder (MLTWeatherDataCube) reads directly from zips via
-        # IntervalFolderManager, so creating intermediate per-year .nc files
-        # would be redundant and would delete the zips after stacking.
-        results = orch.download(variables, export_as_netcdf=False)
+        # export_as_netcdf=False: keep raw zip files; MLTWeatherDataCube
+        # reads directly from zips via IntervalFolderManager.
+        results = orch.download(variables, export_as_netcdf=False, ncores=ncores)
 
         all_files = [v for vdict in results.values() for v in vdict.values()]
 
+        # Build the multi-variable, multi-temporal weather datacube.
+        from ag_cube_cm.transform.weather_cube import MLTWeatherDataCube, METEO_NAMES
+        from ag_cube_cm.ingestion.files_manager import IntervalFolderManager
+
+        # Map cube variable names → downloaded raw folders.
+        # _make_output_folder names folders as "{var_key}_raw".
+        directory_paths = {
+            METEO_NAMES[var_key]: os.path.join(output_folder, f"{var_key}_raw")
+            for var_key in variables
+            if var_key in METEO_NAMES
+        }
+        ref_var = "tmax" if "tmax" in directory_paths else next(iter(directory_paths))
+        cube_builder = MLTWeatherDataCube(
+            directory_paths=directory_paths,
+            folder_manager=IntervalFolderManager(),
+        )
+        nc_path = cube_builder.save_datacube(
+            output_path=output_folder,
+            starting_date=starting_date,
+            ending_date=ending_date,
+            reference_variable=ref_var,
+            ncores=ncores,
+        )
+
         return _ok({
+            "output_path": nc_path,
             "output_folder": output_folder,
             "country_code": country_code,
             "feature": feature,
@@ -511,6 +539,17 @@ def run_simulation(
         weather_ds = xr.open_dataset(cfg.SPATIAL_INFO.weather_path)
         soil_ds    = xr.open_dataset(cfg.SPATIAL_INFO.soil_path)
 
+        # After open_dataset, grid_mapping lives in variable .attrs but rioxarray's
+        # clip/mask reads CRS at the DataArray level (rio.crs), which is None until
+        # we explicitly re-write it.  Clear stale encoding first to avoid the
+        # "multiple grid mappings" warning, then stamp EPSG:4326 on both datasets.
+        import rioxarray as _rio  # noqa: F401
+        for _ds in (weather_ds, soil_ds):
+            for _vname in list(_ds.data_vars) + list(_ds.coords):
+                _ds.variables[_vname].encoding.pop("grid_mapping", None)
+        weather_ds = weather_ds.rio.write_crs("EPSG:4326", inplace=True)
+        soil_ds    = soil_ds.rio.write_crs("EPSG:4326", inplace=True)
+
         # Clip to admin boundary if requested (via parameter or config)
         effective_feature = feature or cfg.SPATIAL_INFO.feature
         if effective_feature:
@@ -644,7 +683,7 @@ def run_simulation(
             "pixels_skipped": n_skip,
             "pixels_failed": n_failed,
             "n_planting_windows": n_windows,
-            "mean_hwam_kg_ha": round(mean_hwam, 1) if mean_hwam else None,
+            "mean_hwam_kg_ha": round(mean_hwam, 1) if mean_hwam is not None else None,
         })
     except Exception as exc:
         return _err(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[-800:]}")

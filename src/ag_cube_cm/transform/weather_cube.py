@@ -305,6 +305,7 @@ class MLTWeatherDataCube:
         suffix: str = "",
         reference_variable: str = "tmax",
         rechunk_for_spatial: bool = True,
+        ncores: int = 0,
     ) -> str:
         """Build and save the full multi-temporal datacube to a NetCDF file.
 
@@ -327,6 +328,9 @@ class MLTWeatherDataCube:
         rechunk_for_spatial : bool
             If ``True``, rechunk the final cube for pixel-level extraction
             (spatial tiles, full time axis).  Default: ``True``.
+        ncores : int
+            Parallel workers for per-date processing.  ``0`` → sequential.
+            Default: 0.
 
         Returns
         -------
@@ -334,7 +338,7 @@ class MLTWeatherDataCube:
             Path to the saved NetCDF file.
         """
         self.common_dates_and_file_names(starting_date, ending_date)
-        mlt = self.multitemporal_data(reference_variable=reference_variable)
+        mlt = self.multitemporal_data(reference_variable=reference_variable, ncores=ncores)
         cube = stack_datacube_temporally(mlt, time_dim_name="date", parse_dates=True)
 
         if rechunk_for_spatial:

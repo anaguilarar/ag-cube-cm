@@ -165,36 +165,30 @@ Once Claude Code is running, invoke the bundled slash command:
 Then describe what you want in plain language. The assistant asks clarifying
 questions, then calls the MCP tools in the correct order automatically.
 
-```
-/spatial-crop-modeler
-```
-
-Then describe what you want in plain language. The assistant asks clarifying
-questions, then calls the MCP tools in the correct order automatically.
-
 ### Example conversation
 
 ```
-You:     I want to simulate maize yield in Malawi for 2000-2019,
-         planting in November with 6 windows, no fertilizer.
+You:     I want to simulate maize yield in Mwanza, Malawi for 2010-2012,
+         planting on 2010-06-01 with 5 windows, no fertilizer.
 
 Claude:  What working path should DSSAT use? (must have no spaces)
          Do you already have weather and soil files, or should I download them?
 
-You:     Download everything. Save runs to /tmp/mlw_dssat.
+You:     Download everything. Save runs to D:/tmp_t.
 
-Claude:  [calls download_weather]  → weather_mwi.nc downloaded (7305 days)
-         [calls download_soil]     → soil_mwi.nc downloaded (5 depths)
-         [calls generate_config]   → malawi.yaml created
-         [calls run_simulation]    → 16560 pixels × 6 windows running...
+Claude:  [calls list_admin_units]  → verifying 'Mwanza' is valid
+         [calls download_weather]  → weather_mwanza.nc downloaded (1096 days)
+         [calls download_soil]     → soil_mwanza.nc downloaded (5 depths)
+         [calls generate_config]   → mwanza.yaml created
+         [calls run_simulation]    → 85 pixels × 5 windows running...
 
-         Results saved to malawi_yield.nc
-         ok=9840  skip=6720  failed=0
-         Mean HWAM: 3 847 kg/ha
+         Results saved to mwanza_yield.nc
+         ok=425  skip=0  failed=0
+         Mean HWAM: 4 120 kg/ha
 
          Per-window summary:
-           W00 (2000-11-01): mean=3 612  min=890   max=6 240 kg/ha
-           W01 (2000-11-08): mean=3 920  ...
+           W00 (2010-06-01): mean=4 050  min=1200  max=6 100 kg/ha
+           W01 (2010-06-08): mean=4 150  ...
 ```
 
 ### Available MCP tools

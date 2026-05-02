@@ -292,8 +292,16 @@ def mask_with_geometry(
     y_dim = next((d for d in dims if d in {"y", "lat", "latitude"}), dims[-2])
     x_dim = next((d for d in dims if d in {"x", "lon", "longitude"}), dims[-1])
 
+    # GeoDataFrames iterate over column names, not geometries — extract explicitly.
+    if isinstance(geometry, gpd.GeoDataFrame):
+        geom_shapes = [mapping(g) for g in geometry.geometry]
+    elif hasattr(geometry, "__iter__"):
+        geom_shapes = [mapping(g) if hasattr(g, "__geo_interface__") else g for g in geometry]
+    else:
+        geom_shapes = [mapping(geometry)]
+
     shape_mask = rasterio.features.geometry_mask(
-        geometry if hasattr(geometry, "__iter__") else [geometry],
+        geom_shapes,
         out_shape=(len(ds[y_dim]), len(ds[x_dim])),
         transform=src_transform,
         all_touched=all_touched,

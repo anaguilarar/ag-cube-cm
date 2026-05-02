@@ -94,9 +94,11 @@ class DSSATModel(CropModel):
         for temp_col in ['tmin', 'tmax']:
             if temp_col in df_wth.columns and df_wth[temp_col].mean() > 100:
                 df_wth[temp_col] = df_wth[temp_col] - 273.15
-        # Solar radiation: J m-2 d-1 → MJ m-2 d-1
-        if 'srad' in df_wth.columns and df_wth['srad'].mean() > 10000:
-            df_wth['srad'] = df_wth['srad'] / 1e6
+        # Solar radiation: J m-2 d-1 → MJ m-2 d-1 (column may be 'solar_radiation' or 'srad')
+        for _srad_col in ('solar_radiation', 'srad'):
+            if _srad_col in df_wth.columns and df_wth[_srad_col].mean() > 10000:
+                df_wth[_srad_col] = df_wth[_srad_col] / 1e6
+                break
 
         if not df_wth.empty:
             self._write_wth(df_wth, lat, lon, elevation)
