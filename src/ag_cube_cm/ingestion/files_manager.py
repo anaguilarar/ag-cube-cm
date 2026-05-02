@@ -255,7 +255,13 @@ class IntervalFolderManager:
             path = self.check_and_extract_zip('{}'.format(year))
             print(path)
             dates_toquery = concatenate_dates(str(year), self.query_dates)
-            file_names = [[d,filepath] for filepath in os.listdir(path) for d in dates_toquery if filepath.find(d) != -1]
+            _VALID_EXTS = ('.nc', '.tif', '.tiff', '.zip')
+            file_names = [
+                [d, filepath]
+                for filepath in os.listdir(path)
+                for d in dates_toquery
+                if filepath.find(d) != -1 and filepath.lower().endswith(_VALID_EXTS)
+            ]
             listfilesyear.append(file_names)
 
         return list(itertools.chain.from_iterable(listfilesyear))

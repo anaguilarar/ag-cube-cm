@@ -22,7 +22,11 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+import logging
+
 from mcp.server.fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "ag-cube-cm",
@@ -193,7 +197,7 @@ def download_weather(
             for var_key in variables
             if var_key in METEO_NAMES
         }
-        ref_var = "tmax" if "tmax" in directory_paths else next(iter(directory_paths))
+        ref_var = "precipitation" if "precipitation" in directory_paths else next(iter(directory_paths))
         cube_builder = MLTWeatherDataCube(
             directory_paths=directory_paths,
             folder_manager=IntervalFolderManager(),
@@ -567,7 +571,37 @@ def run_simulation(
         base_pdate = cfg.MANAGEMENT.planting_date
         n_windows  = cfg.MANAGEMENT.n_planting_windows or 1
         step       = cfg.MANAGEMENT.planting_window_days
+        # Base planting dates use the config year; for multi-year runs the year is
+        # substituted in the job loop below.
         planting_dates = [base_pdate + timedelta(days=w * step) for w in range(n_windows)]
+
+        # --- Detect simulation years from weather time dimension ---
+        time_dim = next(
+            (d for d in weather_ds.dims if d in {"time", "date"}), None
+        )
+        if time_dim is not None:
+            try:
+                raw_times = weather_ds[time_dim].values
+                all_years = sorted({int(pd.Timestamp(t).year) for t in raw_times})
+            except Exception:
+                all_years = [base_pdate.year]
+        else:
+            all_years = [base_pdate.year]
+
+        # Keep only years where the harvest falls within the weather record.
+        # Approximate harvest at 200 days after planting; if it crosses into the
+        # next calendar year that year must also be present.
+        last_yr = max(all_years)
+        sim_years = []
+        for yr in all_years:
+            try:
+                pdate_yr = base_pdate.replace(year=yr)
+            except ValueError:
+                pdate_yr = base_pdate.replace(year=yr, day=28)
+            if (pdate_yr + timedelta(days=200)).year <= last_yr:
+                sim_years.append(yr)
+        if not sim_years:
+            sim_years = all_years  # safety fallback
 
         # Build pixel list
         pixel_coords: dict[int, tuple[float, float]] = {
@@ -578,25 +612,41 @@ def run_simulation(
                 for x in weather_ds.x.values
             )
         }
-
         if max_pixels is not None:
             pixel_coords = dict(list(pixel_coords.items())[:max_pixels])
 
         ncores = cfg.GENERAL_INFO.ncores
 
         def _run(args):
-            pixel_idx, w_idx, pdate, y, x = args
-            dir_name = f"px{pixel_idx}_w{w_idx:02d}"
-            res = {"pixel_idx": pixel_idx, "window_idx": w_idx,
-                   "y": y, "x": x, "HWAM": np.nan, "flag": 2, "error": ""}
+            pixel_idx, w_idx, yr, pdate_yr, y, x = args
+            dir_name = f"px{pixel_idx}_w{w_idx:02d}_y{yr}"
+            res = {
+                "pixel_idx": pixel_idx, "window_idx": w_idx, "year": yr,
+                "y": y, "x": x, "HWAM": np.nan, "flag": 2, "error": "",
+            }
             try:
                 wsl = weather_ds.sel(y=y, x=x, method="nearest")
                 ssl = soil_ds.sel(y=y, x=x, method="nearest")
+
+                # Slice weather to just the years needed for this run so that
+                # DSSATModel writes a compact .WTH file with NYERS=1.
+                if time_dim is not None:
+                    try:
+                        times = pd.DatetimeIndex(
+                            [pd.Timestamp(t) for t in wsl[time_dim].values]
+                        )
+                        harvest_yr = (pdate_yr + timedelta(days=250)).year
+                        yr_mask = times.year.isin(range(yr, harvest_yr + 1))
+                        wsl = wsl.isel({time_dim: yr_mask.values})
+                    except Exception:
+                        pass  # fallback: use the full weather slice
+
                 if (wsl.to_dataframe().reset_index().dropna().empty or
                         ssl.to_dataframe().reset_index().dropna().empty):
                     res["error"] = "no-data pixel"
                     return res
-                mgmt_w = cfg.MANAGEMENT.model_copy(update={"planting_date": pdate})
+
+                mgmt_w = cfg.MANAGEMENT.model_copy(update={"planting_date": pdate_yr})
                 cfg_w  = cfg.model_copy(update={"MANAGEMENT": mgmt_w})
                 model  = DSSATModel(cfg_w)
                 model.setup_working_directory(dir_name)
@@ -619,11 +669,17 @@ def run_simulation(
                 res["error"] = str(e)
             return res
 
-        jobs = [
-            (idx, w_idx, pdate, pixel_coords[idx][0], pixel_coords[idx][1])
-            for idx in pixel_coords
-            for w_idx, pdate in enumerate(planting_dates)
-        ]
+        # Jobs: one entry per (pixel × window × year)
+        jobs = []
+        for idx in pixel_coords:
+            py, px = pixel_coords[idx]
+            for w_idx, base_pd in enumerate(planting_dates):
+                for yr in sim_years:
+                    try:
+                        pdate_yr = base_pd.replace(year=yr)
+                    except ValueError:
+                        pdate_yr = base_pd.replace(year=yr, day=28)
+                    jobs.append((idx, w_idx, yr, pdate_yr, py, px))
 
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=ncores) as pool:
@@ -640,35 +696,65 @@ def run_simulation(
         n_failed = int((df["flag"] == 1).sum())
         mean_hwam = float(ok_df["HWAM"].dropna().mean()) if n_ok else None
 
-        # Build output NetCDF
-        y_vals = sorted(df["y"].unique())
-        x_vals = sorted(df["x"].unique())
-        yi_map = {v: i for i, v in enumerate(y_vals)}
-        xi_map = {v: i for i, v in enumerate(x_vals)}
-        hwam_grid = np.full((n_windows, len(y_vals), len(x_vals)), np.nan, dtype=np.float32)
-        flag_grid = np.full((n_windows, len(y_vals), len(x_vals)), 2, dtype=np.int8)
+        # Build output NetCDF — shape: (planting_window, year, y, x)
+        y_vals   = sorted(df["y"].unique())
+        x_vals   = sorted(df["x"].unique())
+        yi_map   = {v: i for i, v in enumerate(y_vals)}
+        xi_map   = {v: i for i, v in enumerate(x_vals)}
+        yr_i_map = {yr: i for i, yr in enumerate(sim_years)}
+
+        hwam_grid = np.full(
+            (n_windows, len(sim_years), len(y_vals), len(x_vals)),
+            np.nan, dtype=np.float32,
+        )
+        flag_grid = np.full(
+            (n_windows, len(sim_years), len(y_vals), len(x_vals)),
+            2, dtype=np.int8,
+        )
         for _, row in df.iterrows():
-            wi = int(row["window_idx"])
-            yi = yi_map[row["y"]]
-            xi = xi_map[row["x"]]
-            hwam_grid[wi, yi, xi] = row["HWAM"]
-            flag_grid[wi, yi, xi] = int(row["flag"])
+            wi  = int(row["window_idx"])
+            yri = yr_i_map[int(row["year"])]
+            yi  = yi_map[row["y"]]
+            xi  = xi_map[row["x"]]
+            hwam_grid[wi, yri, yi, xi] = row["HWAM"]
+            flag_grid[wi, yri, yi, xi] = int(row["flag"])
 
         ds_out = xr.Dataset(
             {
-                "HWAM": (["planting_window", "y", "x"], hwam_grid,
+                "HWAM": (["planting_window", "year", "y", "x"], hwam_grid,
                          {"long_name": "Mean grain yield at maturity", "units": "kg/ha"}),
-                "flag": (["planting_window", "y", "x"], flag_grid,
+                "flag": (["planting_window", "year", "y", "x"], flag_grid,
                          {"long_name": "0=ok 1=failed 2=no_data"}),
             },
             coords={
                 "planting_window": np.arange(n_windows),
+                "year": sim_years,
                 "planting_date": (["planting_window"],
                                   [str(p) for p in planting_dates]),
                 "y": y_vals,
                 "x": x_vals,
             },
         )
+
+        # Register CRS on the output dataset so downstream tools can read it correctly.
+        for _vname in list(ds_out.data_vars) + list(ds_out.coords):
+            ds_out.variables[_vname].encoding.pop("grid_mapping", None)
+        ds_out = ds_out.rio.set_spatial_dims(x_dim="x", y_dim="y")
+        ds_out = ds_out.rio.write_crs("EPSG:4326")
+        ds_out["x"].attrs.update({
+            "standard_name": "longitude",
+            "long_name": "longitude",
+            "units": "degrees_east",
+            "axis": "X",
+        })
+        ds_out["y"].attrs.update({
+            "standard_name": "latitude",
+            "long_name": "latitude",
+            "units": "degrees_north",
+            "axis": "Y",
+        })
+        ds_out.attrs["Conventions"] = "CF-1.8"
+
         out = cfg.SPATIAL_INFO.output_path
         if out:
             Path(out).parent.mkdir(parents=True, exist_ok=True)
@@ -683,6 +769,8 @@ def run_simulation(
             "pixels_skipped": n_skip,
             "pixels_failed": n_failed,
             "n_planting_windows": n_windows,
+            "n_years": len(sim_years),
+            "years": sim_years,
             "mean_hwam_kg_ha": round(mean_hwam, 1) if mean_hwam is not None else None,
         })
     except Exception as exc:

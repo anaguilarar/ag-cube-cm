@@ -136,7 +136,22 @@ class DSSATModel(CropModel):
         # DSSAT requires strictly chronological rows — sort by date first.
         df_wth = df_wth.copy()
         df_wth['_date_parsed'] = pd.to_datetime(df_wth['date'])
-        df_wth = df_wth.sort_values('_date_parsed').drop(columns=['_date_parsed'])
+        df_wth = df_wth.sort_values('_date_parsed')
+
+        # Fill any missing days so DSSAT never hits a gap mid-season.
+        # Gaps (e.g. from sidecar files corrupting the download index) cause
+        # DSSAT to force-harvest on the first missing date.
+        full_range = pd.date_range(df_wth['_date_parsed'].min(),
+                                   df_wth['_date_parsed'].max(), freq='D')
+        if len(full_range) > len(df_wth):
+            df_wth = (df_wth.set_index('_date_parsed')
+                            .reindex(full_range)
+                            .interpolate(method='linear')
+                            .reset_index()
+                            .rename(columns={'index': '_date_parsed'}))
+            df_wth['date'] = df_wth['_date_parsed']
+
+        df_wth = df_wth.drop(columns=['_date_parsed'])
 
         # Calculate Long-Term Average Temp (TAV) and Amplitude (AMP)
         if 'tmax' in df_wth.columns and 'tmin' in df_wth.columns:

@@ -711,9 +711,12 @@ def mask_xarray_using_gpdgeometry(xrdata, geometry, xdim_name = 'x', ydim_name =
     return prmasked
 
 def read_raster_data(path, crop_extent: List[float] = None, xdim_name = 'x', ydim_name = 'y'):
-    assert os.path.exists(path), f"{path} does not exits" 
-    
-    xr_data = xarray.open_dataset(path)
+    assert os.path.exists(path), f"{path} does not exits"
+
+    try:
+        xr_data = xarray.open_dataset(path, engine="netcdf4")
+    except Exception:
+        xr_data = xarray.open_dataset(path, engine="rasterio")
     dimnames = list(xr_data.sizes.keys())
     
     if 'lon' in dimnames and xdim_name!='lon':
