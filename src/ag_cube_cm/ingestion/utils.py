@@ -12,6 +12,7 @@ import numpy as np
 import glob
 
 import xarray
+import rioxarray  # noqa: F401 — registers .rio accessor; must be imported before any .rio call
 
 from rasterio.enums import Resampling
 

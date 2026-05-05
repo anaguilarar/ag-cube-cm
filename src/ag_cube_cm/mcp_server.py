@@ -135,8 +135,9 @@ def download_weather(
         Administrative level for the feature lookup (default 2 = district).
     ncores : int
         Parallel workers used for both the CHIRPS day-downloads and the
-        datacube stacking step.  Default 4.  Match to your CPU count for
-        best throughput; keep ≤ 8 for CHIRPS to avoid server rate limits.
+        datacube stacking step.  Default 4.  Any value is safe to pass —
+        CHIRPS workers are hard-capped at 3 inside the downloader to avoid
+        CrowdSec HTTP 403 on data.chc.ucsb.edu.
 
     Returns
     -------
@@ -202,10 +203,14 @@ def download_weather(
             directory_paths=directory_paths,
             folder_manager=IntervalFolderManager(),
         )
+        # Build a unique suffix so files from different regions don't collide.
+        _slug = feature.lower().replace(" ", "_") if feature else ""
+        _suffix = f"{country_code.lower()}{'_' + _slug if _slug else ''}"
         nc_path = cube_builder.save_datacube(
             output_path=output_folder,
             starting_date=starting_date,
             ending_date=ending_date,
+            suffix=_suffix,
             reference_variable=ref_var,
             ncores=ncores,
         )
@@ -395,6 +400,14 @@ def generate_config(
     JSON with status, config_yaml (string), and save_path.
     """
     try:
+        # DSSAT path constraint: spaces in working_path corrupt the MMZ line → rc=99.
+        space_warning = (
+            f"WARNING: working_path '{working_path}' contains spaces. "
+            "DSSAT will silently fail (rc=99). Use a path without spaces, "
+            "e.g. 'D:/ghana_runs' instead of 'D:/ghana runs'."
+            if " " in working_path else None
+        )
+
         fert_block = ""
         if fertilizer_n_kg_ha > 0 or fertilizer_p_kg_ha > 0:
             fert_block = (
@@ -449,7 +462,10 @@ def generate_config(
                 fh.write(yaml_text)
             save_path = save_to
 
-        return _ok({"config_yaml": yaml_text, "save_path": save_path})
+        payload = {"config_yaml": yaml_text, "save_path": save_path}
+        if space_warning:
+            payload["warning"] = space_warning
+        return _ok(payload)
     except Exception as exc:
         return _err(f"{type(exc).__name__}: {exc}")
 
@@ -553,6 +569,23 @@ def run_simulation(
                 _ds.variables[_vname].encoding.pop("grid_mapping", None)
         weather_ds = weather_ds.rio.write_crs("EPSG:4326", inplace=True)
         soil_ds    = soil_ds.rio.write_crs("EPSG:4326", inplace=True)
+
+        # Normalise spatial dim names to y/x so the pixel loop works regardless
+        # of whether the NetCDF was saved with lat/lon or y/x dimension names.
+        def _normalise_dims(ds):
+            rn = {}
+            if "lat" in ds.dims and "y" not in ds.dims:
+                rn["lat"] = "y"
+            if "lon" in ds.dims and "x" not in ds.dims:
+                rn["lon"] = "x"
+            if "latitude" in ds.dims and "y" not in ds.dims:
+                rn["latitude"] = "y"
+            if "longitude" in ds.dims and "x" not in ds.dims:
+                rn["longitude"] = "x"
+            return ds.rename(rn) if rn else ds
+
+        weather_ds = _normalise_dims(weather_ds)
+        soil_ds    = _normalise_dims(soil_ds)
 
         # Clip to admin boundary if requested (via parameter or config)
         effective_feature = feature or cfg.SPATIAL_INFO.feature

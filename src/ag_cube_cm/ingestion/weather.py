@@ -617,7 +617,7 @@ class CHIRPSDownloader:
                     jobs.append((year, month, day))
 
         pbar = tqdm(total=len(jobs), desc="CHIRPS precipitation", unit="day")
-
+        ncores = min(ncores, 3)
         def _run(job: tuple[str, str, str]) -> None:
             year, month, day = job
             try:
@@ -876,14 +876,15 @@ class WeatherDownloadOrchestrator:
             if var_key == "precipitation" or (
                 matched_key is None and "precipitation" in var_key
             ):
-                # CHIRPS path
+                # CHIRPS path — cap workers at 3 to avoid CrowdSec HTTP 403
                 chirps = CHIRPSDownloader()
                 paths = chirps.download(
                     extent=self.extent,
                     starting_date=self.starting_date,
                     ending_date=self.ending_date,
                     output_folder=out_folder,
-                    ncores=ncores,
+                    ncores=min(ncores, 3),
+                    polite_delay=0.5,
                 )
                 results[var_key] = paths
 

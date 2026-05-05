@@ -6,7 +6,7 @@
       "env": {
         "PYTHONPATH": "${workspaceFolder}/src"
       },
-      "description": "ag-cube-cm tools: download AgERA5/CHIRPS weather, SoilGrids soil data, and run DSSAT/BANANA_N crop model simulations."
+      "description": "ag-cube-cm tools: download AgERA5/CHIRPS weather, SoilGrids soil data, and run DSSAT/BANANA_N crop model simulations. Requires: pip install -e '.[mcp]' from the project root."
     }
   }
 }

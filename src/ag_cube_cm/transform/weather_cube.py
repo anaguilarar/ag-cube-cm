@@ -40,11 +40,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import rioxarray  # noqa: F401 — registers .rio accessor for subprocess workers
 import tqdm
 import xarray as xr
 
-from ag_cube_cm.ingestion.files_manager import IntervalFolderManager  
-from ag_cube_cm.ingestion.utils import set_crs 
+from ag_cube_cm.ingestion.files_manager import IntervalFolderManager
+from ag_cube_cm.ingestion.utils import set_crs
 
 logger = logging.getLogger(__name__)
 

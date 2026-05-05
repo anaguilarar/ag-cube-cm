@@ -137,9 +137,18 @@ with open(os.path.expanduser("~/.cdsapirc"), "w") as f:
 
 ### Step 2 — Install MCP support
 
+If you installed from GitHub (no local clone):
 ```bash
 pip install "ag-cube-cm[mcp] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
 ```
+
+If you cloned the repository locally (recommended for development — edits to `src/` are picked up immediately):
+```bash
+cd ag-cube-cm
+pip install -e ".[mcp]"
+```
+
+> **Important:** The non-editable install copies files to `site-packages`. Any edits you make to `src/` afterwards will **not** be reflected in the running MCP server until you reinstall. Use the editable install when developing.
 
 ### Step 3 — Register the server with Claude Code
 
