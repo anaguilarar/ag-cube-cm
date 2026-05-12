@@ -472,8 +472,8 @@ def numpy_to_xarray(stacked_arrays, transform, crs, var_name="precipitation"):
     if data.ndim == 2:
         data = data[np.newaxis, ...] # ensure depth dimension exists
     depth, height, width = data.shape
-    xs = (np.arange(width) + 0.5) * transform.a + transform.c
-    ys = (np.arange(height) + 0.5) * transform.e + transform.f
+    xs = np.round((np.arange(width) + 0.5) * transform.a + transform.c, 8)
+    ys = np.round((np.arange(height) + 0.5) * transform.e + transform.f, 8)
     # Create the native DataArray
     
     metadata = {

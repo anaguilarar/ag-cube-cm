@@ -23,6 +23,7 @@ env/
 .coverage
 htmlcov/
 *.coveragerc
+tmp_options/
 
 # ---- Type checking ---------------------------------------------------------
 .mypy_cache/

@@ -118,7 +118,7 @@ def stack_datacube_temporally(
         ds_exp = ds.assign_coords({time_dim_name: t_coord}).expand_dims(time_dim_name)
         datasets.append(ds_exp)
 
-    stacked = xr.concat(datasets, dim=time_dim_name, combine_attrs="override", join='outer')
+    stacked = xr.concat(datasets, dim=time_dim_name, combine_attrs="override", join='override')
 
     # Restore CRS from first dataset
     first = datasets[0]
