@@ -381,8 +381,22 @@ def run_simulation(
                     except Exception:
                         pass
 
-                if (wsl.to_dataframe().reset_index().dropna().empty or
-                        ssl.to_dataframe().reset_index().dropna().empty):
+                def _has_data(ds: "xr.Dataset") -> bool:
+                    """Return True if ds contains at least one non-NaN value."""
+                    try:
+                        df = ds.to_dataframe()
+                        if df.index.nlevels > 0:
+                            df = df.reset_index()
+                        return not df.dropna().empty
+                    except Exception:
+                        # 0-dimensional dataset (single-point soil slice) — check values directly
+                        return any(
+                            not np.all(np.isnan(ds[v].values))
+                            for v in ds.data_vars
+                            if np.issubdtype(ds[v].dtype, np.floating)
+                        )
+
+                if not _has_data(wsl) or not _has_data(ssl):
                     res["error"] = "no-data pixel"
                     return res
 
