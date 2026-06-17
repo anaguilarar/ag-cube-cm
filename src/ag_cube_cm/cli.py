@@ -173,18 +173,22 @@ class ClimateSpec(BaseModel):
         Field(description=(
             "Mapping of CF variable name to download source. "
             "Keys: pr, tasmax, tasmin, rsds. "
-            "Sources: chirps, chirts, agera5, nasa_power."
+            "Sources: chirps, chirts, agera5, nasa_power, gee."
         )),
     ]
     ncores: Annotated[int, Field(default=2, ge=1)]
     agera5_version: Annotated[str, Field(default="2_0")]
     reference_variable: Annotated[str, Field(default="pr",
         description="CF variable whose grid defines the output resolution")]
+    gee_project: Annotated[
+        str | None,
+        Field(default=None, description="GEE cloud project for ee.Initialize() — required when any source is 'gee'"),
+    ] = None
 
     @field_validator("sources", mode="after")
     @classmethod
     def _valid_sources(cls, v: dict[str, str]) -> dict[str, str]:
-        allowed_sources = {"chirps", "chirts", "agera5", "nasa_power"}
+        allowed_sources = {"chirps", "chirts", "agera5", "nasa_power", "gee"}
         for cf_var, src in v.items():
             if src not in allowed_sources:
                 raise ValueError(
@@ -341,7 +345,14 @@ def _run_full_pipeline(cfg: FullPipelineConfig, dry_run: bool = False) -> dict:
         "DATES": {"starting_date": cfg.dates.start, "ending_date": cfg.dates.end},
         "SPATIAL_INFO": {"extent": cfg.spatial.bbox},
         "CLIMATE": {
-            "variables": {var: {"source": src} for var, src in cfg.climate.sources.items()}
+            "variables": {
+                var: (
+                    {"source": src, "gee_project": cfg.climate.gee_project}
+                    if src == "gee" and cfg.climate.gee_project
+                    else {"source": src}
+                )
+                for var, src in cfg.climate.sources.items()
+            }
         },
         "SOIL": {"enabled": False},
         "GENERAL": {
@@ -488,9 +499,11 @@ climate:
     tasmin: chirts     # min temperature
     rsds:   agera5     # solar radiation (0.1 deg, CDS API key required)
     # rsds: nasa_power # alternative: no API key, 0.5 deg resolution
+    # pr:   gee        # alternative: Google Earth Engine (requires gee_project below)
   ncores:             2
   agera5_version:     "2_0"
   reference_variable: pr
+  # gee_project: my-gcp-project  # required when any source above is 'gee'
 
 soil:
   variables: [clay, sand, silt, bdod, cfvo, soc, phh2o, wv0010, wv0033, wv1500]
