@@ -1,0 +1,48 @@
+mode: full_pipeline
+
+output_dir: /ag_cube_example/hnd
+suffix:     hnd_comayagua
+
+spatial:
+  bbox: [-87.8, 14.0, -86.8, 15.0]   # [xmin, ymin, xmax, ymax] WGS-84
+
+dates:
+  start: "2020-01-01"
+  end:   "2022-12-31"
+
+climate:
+  sources:
+    pr:     chirps     # precipitation (0.05 deg, no API key)
+    tasmax: chirts     # max temperature (0.05 deg, no API key)
+    tasmin: chirts     # min temperature
+    rsds:   agera5     # solar radiation (0.1 deg, CDS API key required)
+    # rsds: nasa_power # alternative: no API key, 0.5 deg resolution
+  ncores:             2
+  agera5_version:     "2_0"
+  reference_variable: pr
+
+soil:
+  variables: [clay, sand, silt, bdod, cfvo, soc, phh2o, wv0010, wv0033, wv1500]
+  depths:    ["0-5", "5-15", "15-30", "30-60", "60-100"]
+  reference_variable: wv1500
+
+simulation:
+  country:      Honduras
+  country_code: HND
+  model:        dssat
+  working_path: /dssat_runs
+  ncores:       4
+  max_pixels:   null
+  feature:      null
+  adm_level:    2
+
+crop:
+  name:      Maize
+  cultivar:  IB1072
+
+management:
+  planting_date:        "2020-05-15"
+  n_planting_windows:   3
+  planting_window_days: 14
+  fertilizer_schedule:  []
+

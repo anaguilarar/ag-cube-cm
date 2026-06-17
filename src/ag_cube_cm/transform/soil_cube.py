@@ -38,10 +38,115 @@ import tqdm
 import xarray as xr
 import geopandas as gpd
 
-from ag_cube_cm.ingestion.files_manager import SoilFolderManager  # legacy helper
-from ag_cube_cm.ingestion.utils import resample_variables  # legacy helper
+import glob as _glob
+import re as _re
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Inlined soil-folder helper (previously in ingestion.files_manager)
+# ---------------------------------------------------------------------------
+
+class SoilFolderManager:
+    """Discover and sort SoilGrids GeoTIFF files by variable and depth."""
+
+    def __init__(self, path: str, variables: list[str], raster_extension: str = ".tif") -> None:
+        self.path = path
+        self.variables = variables
+        self._extension = raster_extension
+        self.depths: list[str] | None = None
+
+    @staticmethod
+    def _extract_depth(paths: list[str], variable: str, units: str = "cm") -> list[str]:
+        depths = []
+        for path in paths:
+            matches = list(_re.finditer(variable, path))[-1]
+            depths.append(path[matches.end() + 1 : path.index(units + "_")])
+        return depths
+
+    @staticmethod
+    def _sort_depths(depths: list[str]) -> tuple[list[str], list[int]]:
+        init_depths = [d.split("-")[0] for d in depths]
+        sort_idx = list(np.argsort(np.array(init_depths).astype(int)))
+        return [str(depths[i]) for i in sort_idx], sort_idx
+
+    def _check_variable_paths(self, variable: str) -> list[str]:
+        return _glob.glob(self.path + "/*{}*{}".format(variable, self._extension))
+
+    def _extract_depths(self, variable: str, units_string: str = "cm") -> list[str]:
+        variable_paths = self._check_variable_paths(variable)
+        if variable_paths:
+            depths = self._extract_depth(variable_paths, variable, units=units_string)
+            self.depths, self._depthssorted = self._sort_depths(depths)
+        else:
+            self._depthssorted = []
+        return self.depths or []
+
+    def variable_path(self, variable: str, units_string: str = "cm") -> list[str] | None:
+        variable_paths = self._check_variable_paths(variable)
+        if not variable_paths:
+            logger.warning("No data found for variable: %s", variable)
+            return None
+        self._extract_depths(variable, units_string=units_string)
+        return [variable_paths[i] for i in self._depthssorted]
+
+    def get_all_paths(self, units_string: str = "cm", by: str = "depth") -> dict:
+        paths_dict: dict[str, list[str]] = {}
+        for var in self.variables:
+            varinfo = self.variable_path(var, units_string=units_string)
+            if varinfo is not None:
+                paths_dict[var] = varinfo
+
+        depths_available = [
+            self._extract_depth(v, k, units=units_string) for k, v in paths_dict.items()
+        ]
+        self.depths = self._sort_depths(np.unique(depths_available))[0]
+
+        if by != "depth":
+            return paths_dict
+
+        paths_by_depth: dict[str, dict[str, str]] = {}
+        for i, depth in enumerate(self.depths):
+            varpaths: dict[str, str] = {}
+            for k, v in paths_dict.items():
+                if i < len(v):
+                    varpaths[k] = v[i]
+            paths_by_depth[depth] = varpaths
+        return paths_by_depth
+
+
+# ---------------------------------------------------------------------------
+# Inlined 2D-layer helper (previously in ingestion.gis_functions)
+# ---------------------------------------------------------------------------
+
+def _add_2dlayer_to_xarray(
+    image_as_array: np.ndarray,
+    xarraydata: xr.Dataset,
+    variable_name: str,
+) -> xr.Dataset:
+    """Add a 2-D numpy array as a new variable to an existing xarray Dataset."""
+    ref_dim_names = xarraydata.sizes
+    assert len(image_as_array.shape) < 3
+    xrimg = xr.DataArray(image_as_array)
+    new_dims: dict = {}
+    for keyval in xrimg.sizes:
+        pos_dims = [
+            j for j, keyvalref in enumerate(ref_dim_names.keys())
+            if xrimg.sizes[keyval] == ref_dim_names[keyvalref]
+        ]
+        new_dims[keyval] = pos_dims
+    k0, k1 = list(new_dims.keys())[0], list(new_dims.keys())[1]
+    ref_keys = list(ref_dim_names.keys())
+    if len(new_dims[k1]) > 1:
+        new_dims[k1] = ref_keys[1]
+        new_dims[k0] = ref_keys[0]
+    else:
+        new_dims[k1] = ref_keys[new_dims[k1][0]]
+        new_dims[k0] = ref_keys[new_dims[k0][0]]
+    xrimg.name = variable_name
+    xrimg = xrimg.rename(new_dims)
+    return xr.merge([xarraydata, xrimg])
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +352,6 @@ def get_layer_texture(
     xr.Dataset
         Original dataset with an additional ``texture`` variable.
     """
-    from ag_cube_cm.ingestion.gis_functions import add_2dlayer_toxarrayr  # legacy
-
     # Scale if stored as g/kg (SoilGrids raw values > 100)
     sand = soil_layer["sand"].values
     clay = soil_layer["clay"].values
@@ -259,7 +362,7 @@ def get_layer_texture(
     texture_map = find_soil_textural_class_in_nparray(sand, clay).astype(float)
     texture_map[texture_map == 0] = np.nan
 
-    return add_2dlayer_toxarrayr(texture_map, soil_layer.copy(), variable_name=texture_name)
+    return _add_2dlayer_to_xarray(texture_map, soil_layer.copy(), variable_name=texture_name)
 
 
 # ---------------------------------------------------------------------------

@@ -75,6 +75,16 @@ class DSSATModel(CropModel):
         df_wth = weather_slice.to_dataframe().reset_index().dropna()
         df_sol = soil_slice.to_dataframe().reset_index().dropna()
 
+        # Accept CF variable names produced by aggeodata and rename to DSSAT-expected names.
+        # This allows using aggeodata datacubes directly without a manual renaming step.
+        _cf_aliases = {
+            "tasmax": "tmax", "tasmin": "tmin",
+            "pr": "precipitation",
+            "rsds": "solar_radiation",
+            "time": "date",   # time-index column alias
+        }
+        df_wth = df_wth.rename(columns={k: v for k, v in _cf_aliases.items() if k in df_wth.columns})
+
         # Extract coordinates for header files — reproject to WGS84 if needed
         raw_y = float(df_sol['y'].iloc[0]) if 'y' in df_sol.columns else 0.0
         raw_x = float(df_sol['x'].iloc[0]) if 'x' in df_sol.columns else 0.0
@@ -89,12 +99,12 @@ class DSSATModel(CropModel):
         else:
             lat, lon = raw_y, raw_x
 
-        # Unit conversions for AgERA5 data
-        # Temperatures: Kelvin → Celsius
+        # Unit conversions
+        # Temperatures: Kelvin → Celsius (AgERA5 delivers in K)
         for temp_col in ['tmin', 'tmax']:
             if temp_col in df_wth.columns and df_wth[temp_col].mean() > 100:
                 df_wth[temp_col] = df_wth[temp_col] - 273.15
-        # Solar radiation: J m-2 d-1 → MJ m-2 d-1 (column may be 'solar_radiation' or 'srad')
+        # Solar radiation: J m-2 d-1 → MJ m-2 d-1 (AgERA5 delivers in J/m²/d)
         for _srad_col in ('solar_radiation', 'srad'):
             if _srad_col in df_wth.columns and df_wth[_srad_col].mean() > 10000:
                 df_wth[_srad_col] = df_wth[_srad_col] / 1e6
@@ -135,6 +145,9 @@ class DSSATModel(CropModel):
 
         # DSSAT requires strictly chronological rows — sort by date first.
         df_wth = df_wth.copy()
+        # Accept either 'date' or 'time' as the timestamp column.
+        if 'date' not in df_wth.columns and 'time' in df_wth.columns:
+            df_wth = df_wth.rename(columns={'time': 'date'})
         df_wth['_date_parsed'] = pd.to_datetime(df_wth['date'])
         df_wth = df_wth.sort_values('_date_parsed')
 

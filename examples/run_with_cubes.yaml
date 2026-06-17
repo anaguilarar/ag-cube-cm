@@ -1,0 +1,34 @@
+mode: with_cubes
+
+# Paths to pre-built NetCDF datacubes (produced by aggeodata)
+weather_path: /data/climate_hnd_2020_2022.nc
+soil_path:    /data/soil_hnd.nc
+output_path:  /data/yield_hnd.nc
+
+simulation:
+  country:      Honduras
+  country_code: HND
+  model:        dssat
+  working_path: /dssat_runs   # no spaces in path
+  ncores:       4
+  max_pixels:   null          # null = all pixels; integer = quick test cap
+  feature:      null          # null = entire bbox; e.g. "Comayagua"
+  adm_level:    2
+
+crop:
+  name:      Maize
+  cultivar:  IB1072
+
+management:
+  planting_date:        "2021-05-15"
+  n_planting_windows:   3
+  planting_window_days: 14
+  fertilizer_schedule:  []
+  # Uncomment to add fertilizer:
+  # fertilizer_schedule:
+  #   - days_after_planting: 15
+  #     n_kg_ha: 60.0
+  #     p_kg_ha: 30.0
+  #   - days_after_planting: 45
+  #     n_kg_ha: 30.0
+

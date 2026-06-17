@@ -1,23 +1,20 @@
 """
 ag-cube-cm MCP server
 =====================
-Exposes the package's core operations as MCP tools so an AI assistant
-(Claude + spatial-crop-modeler skill) can orchestrate full workflows via
-natural language:
+Exposes spatial crop-model operations as MCP tools.
 
-  download_weather  → download_soil  → generate_config  → run_simulation
+Typical workflow (use the **aggeodata** MCP server first for data downloads):
+  aggeodata: download_chirps / download_agera5 / download_soil
+  aggeodata: build_climate_datacube / build_soil_datacube
+  ag-cube-cm: generate_config  →  run_simulation
 
 Start the server:
     python -m ag_cube_cm.mcp_server
-
-Or register it in .claude/mcp_config.json (see project README).
 """
 
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import traceback
 from pathlib import Path
 from typing import Any
@@ -31,58 +28,16 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP(
     "ag-cube-cm",
     instructions=(
-        "Tools for downloading AgERA5/CHIRPS weather, SoilGrids soil data, "
-        "and running DSSAT/BANANA_N crop model simulations on spatial datacubes."
+        "Tools for running DSSAT/BANANA_N crop model simulations on spatial "
+        "datacubes produced by the aggeodata package. Use the aggeodata MCP "
+        "server first to download climate and soil data."
     ),
 )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _country_bbox(country_code: str, adm_level: int = 0) -> list[float]:
-    """Return [xmin, ymin, xmax, ymax] for a country via GeoBoundaries API."""
-    import requests
-    url = f"https://www.geoboundaries.org/api/current/gbOpen/{country_code.upper()}/ADM{adm_level}/"
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    geojson_url = data.get("gjDownloadURL", "")
-    gj = requests.get(geojson_url, timeout=60).json()
-    import geopandas as gpd, io, json as _json
-    gdf = gpd.read_file(io.StringIO(_json.dumps(gj)))
-    b = gdf.total_bounds  # [xmin, ymin, xmax, ymax]
-    return [round(float(b[0]), 4), round(float(b[1]), 4),
-            round(float(b[2]), 4), round(float(b[3]), 4)]
-
-
-def _feature_bbox(
-    country_code: str,
-    feature_name: str,
-    adm_level: int = 2,
-    buffer_m: float = 8000.0,
-) -> list[float]:
-    """Return [xmin, ymin, xmax, ymax] (WGS84, 1-decimal) for a buffered admin feature.
-
-    Projects the feature polygon to ESRI:54052 (SoilGrids / Homolosine, metres),
-    applies a metric buffer, then reprojects the bounding box back to EPSG:4326.
-    Coordinates are rounded to 1 decimal place (~11 km precision at the equator),
-    which comfortably covers the ~5 km target resolution.
-    """
-    from ag_cube_cm.ingestion.boundaries import get_admin_boundary
-    from pyproj import Transformer
-
-    gdf = get_admin_boundary(country_code, feature_name, adm_level=adm_level)
-    gdf_proj = gdf.to_crs("ESRI:54052")
-    gdf_proj = gdf_proj.copy()
-    gdf_proj["geometry"] = gdf_proj.buffer(buffer_m)
-    xmin, ymin, xmax, ymax = gdf_proj.total_bounds  # metres in ESRI:54052
-
-    tr = Transformer.from_crs("ESRI:54052", "EPSG:4326", always_xy=True)
-    lon_min, lat_min = tr.transform(xmin, ymin)
-    lon_max, lat_max = tr.transform(xmax, ymax)
-    return [round(lon_min, 1), round(lat_min, 1), round(lon_max, 1), round(lat_max, 1)]
-
 
 def _ok(payload: Any) -> str:
     return json.dumps({"status": "ok", **payload}, default=str)
@@ -93,259 +48,43 @@ def _err(msg: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool 1 — download_weather
+# Tool 1 — list_admin_units
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def download_weather(
+def list_admin_units(
     country_code: str,
-    year_start: int,
-    year_end: int,
-    source: str = "agera5",
-    output_folder: str | None = None,
-    bbox: list[float] | None = None,
-    feature: str | None = None,
     adm_level: int = 2,
-    ncores: int = 4,
 ) -> str:
-    """Download weather data for a region and build a multi-temporal NetCDF datacube.
+    """List all administrative unit names for a country at a given level.
 
     Parameters
     ----------
     country_code : str
-        ISO 3166-1 alpha-3 code (e.g. 'MWI', 'HND', 'GLP').
-    year_start / year_end : int
-        Inclusive year range (e.g. 2000, 2019).
-    source : str
-        'agera5' (temperature, solar radiation, wind, humidity) or
-        'chirps' (rainfall only). Default 'agera5'.
-    output_folder : str | None
-        Where to save downloaded zip files and the final NetCDF.
-        Defaults to '<tempdir>/ag_cube_cm/<country_code>/weather'.
-    bbox : list[float] | None
-        [xmin, ymin, xmax, ymax] override in WGS84. When omitted:
-        - uses the buffered feature extent if *feature* is given, or
-        - falls back to the full country bounding box.
-    feature : str | None
-        Admin unit name to restrict the download to (e.g. 'Mwanza', 'Zomba').
-        The feature polygon is buffered by 8 km in the SoilGrids Homolosine
-        projection and reprojected back to WGS84 (1-decimal precision) to
-        define the download extent.
+        ISO 3166-1 alpha-3 code (e.g. 'MWI', 'HND', 'COL').
     adm_level : int
-        Administrative level for the feature lookup (default 2 = district).
-    ncores : int
-        Parallel workers used for both the CHIRPS day-downloads and the
-        datacube stacking step.  Default 4.  Any value is safe to pass —
-        CHIRPS workers are hard-capped at 3 inside the downloader to avoid
-        CrowdSec HTTP 403 on data.chc.ucsb.edu.
+        1 = region/province, 2 = district/department (default), 3 = sub-district.
 
     Returns
     -------
-    JSON with status, output_path (the NetCDF datacube), output_folder, bbox, and file count.
+    JSON with status, country_code, adm_level, count, and sorted list of names.
     """
     try:
-        from ag_cube_cm.ingestion.weather import WeatherDownloadOrchestrator
+        from ag_cube_cm.ingestion.boundaries import list_admin_units as _list
 
-        if output_folder is None:
-            output_folder = str(
-                Path(tempfile.gettempdir()) / "ag_cube_cm" / country_code.upper() / "weather"
-            )
-        Path(output_folder).mkdir(parents=True, exist_ok=True)
-
-        if bbox is None:
-            if feature:
-                bbox = _feature_bbox(country_code, feature, adm_level=adm_level)
-            else:
-                bbox = _country_bbox(country_code)
-
-        starting_date = f"{year_start}-01-01"
-        ending_date   = f"{year_end}-12-31"
-
-        orch = WeatherDownloadOrchestrator(
-            starting_date=starting_date,
-            ending_date=ending_date,
-            xyxy=bbox,
-            output_folder=output_folder,
-        )
-
-        if source.lower() == "chirps":
-            variables = {
-                "precipitation": {"mission": "chirps", "source": "chirps"},
-            }
-        else:
-            variables = {
-                "temperature_tmax": {"mission": "agera5", "source": "agera5"},
-                "temperature_tmin": {"mission": "agera5", "source": "agera5"},
-                "solar_radiation":  {"mission": "agera5", "source": "agera5"},
-                "precipitation":    {"mission": "chirps",  "source": "chirps"},
-                "wind_speed":       {"mission": "agera5", "source": "agera5"},
-            }
-
-        # export_as_netcdf=False: keep raw zip files; MLTWeatherDataCube
-        # reads directly from zips via IntervalFolderManager.
-        results = orch.download(variables, export_as_netcdf=False, ncores=ncores)
-
-        all_files = [v for vdict in results.values() for v in vdict.values()]
-
-        # Build the multi-variable, multi-temporal weather datacube.
-        from ag_cube_cm.transform.weather_cube import MLTWeatherDataCube, METEO_NAMES
-        from ag_cube_cm.ingestion.files_manager import IntervalFolderManager
-
-        # Map cube variable names → downloaded raw folders.
-        # _make_output_folder names folders as "{var_key}_raw".
-        directory_paths = {
-            METEO_NAMES[var_key]: os.path.join(output_folder, f"{var_key}_raw")
-            for var_key in variables
-            if var_key in METEO_NAMES
-        }
-        ref_var = "precipitation" if "precipitation" in directory_paths else next(iter(directory_paths))
-        cube_builder = MLTWeatherDataCube(
-            directory_paths=directory_paths,
-            folder_manager=IntervalFolderManager(),
-        )
-        # Build a unique suffix so files from different regions don't collide.
-        _slug = feature.lower().replace(" ", "_") if feature else ""
-        _suffix = f"{country_code.lower()}{'_' + _slug if _slug else ''}"
-        nc_path = cube_builder.save_datacube(
-            output_path=output_folder,
-            starting_date=starting_date,
-            ending_date=ending_date,
-            suffix=_suffix,
-            reference_variable=ref_var,
-            ncores=ncores,
-        )
-
+        names = _list(country_code, adm_level=adm_level)
         return _ok({
-            "output_path": nc_path,
-            "output_folder": output_folder,
-            "country_code": country_code,
-            "feature": feature,
-            "bbox": bbox,
-            "year_range": [year_start, year_end],
-            "source": source,
-            "files_downloaded": len(all_files),
+            "country_code": country_code.upper(),
+            "adm_level": adm_level,
+            "count": len(names),
+            "units": names,
         })
     except Exception as exc:
         return _err(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
 
 
 # ---------------------------------------------------------------------------
-# Tool 2 — download_soil
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def download_soil(
-    country_code: str,
-    output_folder: str | None = None,
-    bbox: list[float] | None = None,
-    depths: list[str] | None = None,
-    variables: list[str] | None = None,
-    feature: str | None = None,
-    adm_level: int = 2,
-) -> str:
-    """Download SoilGrids data and merge into a multi-depth NetCDF datacube.
-
-    Downloads raw GeoTIFF files from SoilGrids, then builds and saves a
-    merged multi-depth NetCDF datacube ready for use with run_simulation.
-
-    Parameters
-    ----------
-    country_code : str
-        ISO 3166-1 alpha-3 code (e.g. 'MWI').
-    output_folder : str | None
-        Where to save downloaded files and the final NetCDF.
-        Defaults to '<tempdir>/ag_cube_cm/<country_code>/soil'.
-    bbox : list[float] | None
-        [xmin, ymin, xmax, ymax] override in WGS84. When omitted:
-        - uses the buffered feature extent if *feature* is given, or
-        - falls back to the full country bounding box.
-    depths : list[str] | None
-        Depth intervals. Defaults to ["0-5", "5-15", "15-30", "30-60", "60-100"].
-    variables : list[str] | None
-        SoilGrids variables. Defaults to the standard DSSAT set:
-        clay, sand, silt, bdod, cfvo, nitrogen, phh2o, soc, wv0010, wv0033, wv1500.
-    feature : str | None
-        Admin unit name to restrict the download to (e.g. 'Mwanza', 'Zomba').
-        The feature polygon is buffered by 8 km in the SoilGrids Homolosine
-        projection and reprojected back to WGS84 (1-decimal precision) to
-        define the download extent.
-    adm_level : int
-        Administrative level for the feature lookup (default 2 = district).
-
-    Returns
-    -------
-    JSON with status, output_path (the merged NetCDF), output_folder, and file count.
-    """
-    try:
-        from ag_cube_cm.ingestion.soil import SoilGridsDownloader
-        from ag_cube_cm.transform.soil_cube import SoilDataCubeBuilder
-
-        if output_folder is None:
-            output_folder = str(
-                Path(tempfile.gettempdir()) / "ag_cube_cm" / country_code.upper() / "soil"
-            )
-        if depths is None:
-            depths = ["0-5", "5-15", "15-30", "30-60", "60-100"]
-        if variables is None:
-            variables = ["clay", "sand", "silt", "bdod", "cfvo",
-                         "nitrogen", "phh2o", "soc", "wv0010", "wv0033", "wv1500"]
-        if bbox is None:
-            if feature:
-                bbox = _feature_bbox(country_code, feature, adm_level=adm_level)
-            else:
-                bbox = _country_bbox(country_code)
-
-        # Step 1 — purge any previously-downloaded wv* files that are 1×1 pixels
-        # (a known corruption from the old hardcoded ÷250 height/width formula).
-        # The downloader skips existing files, so stale ones must be removed first.
-        import rasterio as _rio
-        for stale in Path(output_folder).glob("wv*.tif"):
-            try:
-                with _rio.open(stale) as _src:
-                    if _src.width <= 1 or _src.height <= 1:
-                        stale.unlink()
-                        logger.info("Removed corrupted 1×1 wv file: %s", stale)
-            except Exception:  # noqa: BLE001
-                pass
-
-        # Step 2 — download raw GeoTIFFs from SoilGrids
-        dl = SoilGridsDownloader(
-            soil_layers=variables,
-            depths=depths,
-            output_folder=output_folder,
-        )
-        downloaded = dl.download(boundaries=bbox)
-
-        # Step 2 — merge GeoTIFFs into a multi-depth NetCDF datacube
-        nc_filename = f"soil_{country_code.lower()}.nc"
-        builder = SoilDataCubeBuilder(
-            data_folder=output_folder,
-            variables=variables,
-            # extent omitted — downloaded TIFs are already spatially clipped
-            # and are in ESRI:54052; passing a WGS84 bbox would return no data.
-            reference_variable="wv1500",
-            target_crs="EPSG:4326",
-        )
-        nc_path = builder.build_and_save(
-            output_path=output_folder,
-            filename=nc_filename,
-        )
-
-        return _ok({
-            "output_path": nc_path,
-            "output_folder": output_folder,
-            "country_code": country_code,
-            "bbox": bbox,
-            "depths": depths,
-            "variables": variables,
-            "files_downloaded": len(downloaded),
-        })
-    except Exception as exc:
-        return _err(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
-
-
-# ---------------------------------------------------------------------------
-# Tool 3 — generate_config
+# Tool 2 — generate_config
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -377,8 +116,8 @@ def generate_config(
     country : str           Full country name (e.g. 'Malawi').
     country_code : str      ISO 3-letter code (e.g. 'MWI').
     model : str             'dssat', 'banana_n', 'simple_model', or 'caf'.
-    weather_path : str      Path to the weather NetCDF datacube.
-    soil_path : str         Path to the soil NetCDF datacube.
+    weather_path : str      Path to the climate NetCDF datacube from aggeodata.
+    soil_path : str         Path to the soil NetCDF datacube from aggeodata.
     crop : str              Crop name (e.g. 'Maize', 'Wheat', 'Bean').
     cultivar : str          DSSAT cultivar ID (e.g. 'IB1072').
     planting_date : str     Base planting date 'YYYY-MM-DD'.
@@ -390,8 +129,7 @@ def generate_config(
     ncores : int            Parallel threads.
     fertilizer_n_kg_ha : float  N applied at planting (kg/ha). 0 = no fertilizer.
     fertilizer_p_kg_ha : float  P applied at planting (kg/ha).
-    feature : str | None    Admin unit to restrict the simulation to
-                            (e.g. 'Zomba', 'Comayagua').  None = full country.
+    feature : str | None    Admin unit to restrict the simulation to.
     adm_level : int         Admin level for the feature boundary (default 2).
     save_to : str | None    If given, writes the YAML to this file path.
 
@@ -400,11 +138,9 @@ def generate_config(
     JSON with status, config_yaml (string), and save_path.
     """
     try:
-        # DSSAT path constraint: spaces in working_path corrupt the MMZ line → rc=99.
         space_warning = (
             f"WARNING: working_path '{working_path}' contains spaces. "
-            "DSSAT will silently fail (rc=99). Use a path without spaces, "
-            "e.g. 'D:/ghana_runs' instead of 'D:/ghana runs'."
+            "DSSAT will silently fail (rc=99). Use a path without spaces."
             if " " in working_path else None
         )
 
@@ -462,7 +198,7 @@ def generate_config(
                 fh.write(yaml_text)
             save_path = save_to
 
-        payload = {"config_yaml": yaml_text, "save_path": save_path}
+        payload: dict[str, Any] = {"config_yaml": yaml_text, "save_path": save_path}
         if space_warning:
             payload["warning"] = space_warning
         return _ok(payload)
@@ -471,47 +207,30 @@ def generate_config(
 
 
 # ---------------------------------------------------------------------------
-# Tool 4 — list_admin_units
+# Tool 3 — list_supported_crops
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def list_admin_units(
-    country_code: str,
-    adm_level: int = 2,
-) -> str:
-    """List all administrative unit names for a country at a given level.
-
-    Useful for discovering valid values for the *feature* parameter of
-    run_simulation and generate_config before running a simulation.
-
-    Parameters
-    ----------
-    country_code : str
-        ISO 3166-1 alpha-3 code (e.g. 'MWI', 'HND', 'COL').
-    adm_level : int
-        Administrative level.  1 = region/province, 2 = district/department
-        (default), 3 = sub-district.
-
-    Returns
-    -------
-    JSON with status, country_code, adm_level, count, and sorted list of names.
-    """
-    try:
-        from ag_cube_cm.ingestion.boundaries import list_admin_units as _list
-
-        names = _list(country_code, adm_level=adm_level)
-        return _ok({
-            "country_code": country_code.upper(),
-            "adm_level": adm_level,
-            "count": len(names),
-            "units": names,
-        })
-    except Exception as exc:
-        return _err(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
+def list_supported_crops() -> str:
+    """List all crops supported by the DSSAT model and their 2-letter codes."""
+    crops = {
+        "Maize": "MZ", "Wheat": "WH", "Rice": "RI", "Sorghum": "SG",
+        "Millet": "ML", "Soybean": "SB", "Bean": "BN", "Cassava": "CS",
+        "Potato": "PT", "Sugarcane": "SC", "Sugarbeet": "BS",
+        "Sunflower": "SU", "Canola": "CN", "Tomato": "TM",
+        "Cabbage": "CB", "Alfalfa": "AL", "Bermudagrass": "BM",
+    }
+    common_cultivars = {
+        "Maize":   ["IB1072 (tropical)", "PC0002 (temperate)", "MEDIUM (generic)"],
+        "Wheat":   ["IB1015 (spring)", "IB1487 (winter)"],
+        "Bean":    ["IB0001"],
+        "Soybean": ["IB0001"],
+    }
+    return _ok({"crops": crops, "example_cultivars": common_cultivars})
 
 
 # ---------------------------------------------------------------------------
-# Tool 5 — run_simulation
+# Tool 4 — run_simulation
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -523,6 +242,12 @@ def run_simulation(
 ) -> str:
     """Run a spatial crop model simulation from a YAML config file.
 
+    Prerequisites
+    -------------
+    Climate and soil NetCDF datacubes must already exist on disk (produced by
+    the **aggeodata** MCP server tools ``build_climate_datacube`` and
+    ``build_soil_datacube``).
+
     Parameters
     ----------
     config_path : str
@@ -532,12 +257,10 @@ def run_simulation(
         Optional cap on number of pixels to simulate (useful for quick tests).
         None = run all land pixels.
     feature : str | None
-        Admin unit name to restrict the simulation to (e.g. 'Zomba', 'Comayagua').
-        Overrides the feature set in the config file.  None = use the entire
-        country bounding box from the config.
+        Admin unit name to restrict the simulation to (e.g. 'Zomba').
+        Overrides the feature set in the config file.
     adm_level : int
-        Administrative level for the feature boundary lookup.
-        1 = region/province, 2 = district/department (default), 3 = sub-district.
+        Administrative level for the feature boundary lookup (default 2).
 
     Returns
     -------
@@ -559,10 +282,6 @@ def run_simulation(
         weather_ds = xr.open_dataset(cfg.SPATIAL_INFO.weather_path)
         soil_ds    = xr.open_dataset(cfg.SPATIAL_INFO.soil_path)
 
-        # After open_dataset, grid_mapping lives in variable .attrs but rioxarray's
-        # clip/mask reads CRS at the DataArray level (rio.crs), which is None until
-        # we explicitly re-write it.  Clear stale encoding first to avoid the
-        # "multiple grid mappings" warning, then stamp EPSG:4326 on both datasets.
         import rioxarray as _rio  # noqa: F401
         for _ds in (weather_ds, soil_ds):
             for _vname in list(_ds.data_vars) + list(_ds.coords):
@@ -570,10 +289,8 @@ def run_simulation(
         weather_ds = weather_ds.rio.write_crs("EPSG:4326", inplace=True)
         soil_ds    = soil_ds.rio.write_crs("EPSG:4326", inplace=True)
 
-        # Normalise spatial dim names to y/x so the pixel loop works regardless
-        # of whether the NetCDF was saved with lat/lon or y/x dimension names.
-        def _normalise_dims(ds):
-            rn = {}
+        def _normalise_dims(ds: xr.Dataset) -> xr.Dataset:
+            rn: dict[str, str] = {}
             if "lat" in ds.dims and "y" not in ds.dims:
                 rn["lat"] = "y"
             if "lon" in ds.dims and "x" not in ds.dims:
@@ -587,7 +304,6 @@ def run_simulation(
         weather_ds = _normalise_dims(weather_ds)
         soil_ds    = _normalise_dims(soil_ds)
 
-        # Clip to admin boundary if requested (via parameter or config)
         effective_feature = feature or cfg.SPATIAL_INFO.feature
         if effective_feature:
             from ag_cube_cm.ingestion.boundaries import get_admin_boundary
@@ -604,11 +320,8 @@ def run_simulation(
         base_pdate = cfg.MANAGEMENT.planting_date
         n_windows  = cfg.MANAGEMENT.n_planting_windows or 1
         step       = cfg.MANAGEMENT.planting_window_days
-        # Base planting dates use the config year; for multi-year runs the year is
-        # substituted in the job loop below.
         planting_dates = [base_pdate + timedelta(days=w * step) for w in range(n_windows)]
 
-        # --- Detect simulation years from weather time dimension ---
         time_dim = next(
             (d for d in weather_ds.dims if d in {"time", "date"}), None
         )
@@ -621,9 +334,6 @@ def run_simulation(
         else:
             all_years = [base_pdate.year]
 
-        # Keep only years where the harvest falls within the weather record.
-        # Approximate harvest at 200 days after planting; if it crosses into the
-        # next calendar year that year must also be present.
         last_yr = max(all_years)
         sim_years = []
         for yr in all_years:
@@ -634,9 +344,8 @@ def run_simulation(
             if (pdate_yr + timedelta(days=200)).year <= last_yr:
                 sim_years.append(yr)
         if not sim_years:
-            sim_years = all_years  # safety fallback
+            sim_years = all_years
 
-        # Build pixel list
         pixel_coords: dict[int, tuple[float, float]] = {
             idx: (float(y), float(x))
             for idx, (y, x) in enumerate(
@@ -650,10 +359,10 @@ def run_simulation(
 
         ncores = cfg.GENERAL_INFO.ncores
 
-        def _run(args):
+        def _run(args: tuple) -> dict:
             pixel_idx, w_idx, yr, pdate_yr, y, x = args
             dir_name = f"px{pixel_idx}_w{w_idx:02d}_y{yr}"
-            res = {
+            res: dict = {
                 "pixel_idx": pixel_idx, "window_idx": w_idx, "year": yr,
                 "y": y, "x": x, "HWAM": np.nan, "flag": 2, "error": "",
             }
@@ -661,8 +370,6 @@ def run_simulation(
                 wsl = weather_ds.sel(y=y, x=x, method="nearest")
                 ssl = soil_ds.sel(y=y, x=x, method="nearest")
 
-                # Slice weather to just the years needed for this run so that
-                # DSSATModel writes a compact .WTH file with NYERS=1.
                 if time_dim is not None:
                     try:
                         times = pd.DatetimeIndex(
@@ -672,7 +379,7 @@ def run_simulation(
                         yr_mask = times.year.isin(range(yr, harvest_yr + 1))
                         wsl = wsl.isel({time_dim: yr_mask.values})
                     except Exception:
-                        pass  # fallback: use the full weather slice
+                        pass
 
                 if (wsl.to_dataframe().reset_index().dropna().empty or
                         ssl.to_dataframe().reset_index().dropna().empty):
@@ -702,7 +409,6 @@ def run_simulation(
                 res["error"] = str(e)
             return res
 
-        # Jobs: one entry per (pixel × window × year)
         jobs = []
         for idx in pixel_coords:
             py, px = pixel_coords[idx]
@@ -723,13 +429,12 @@ def run_simulation(
         soil_ds.close()
 
         df = pd.DataFrame(results)
-        ok_df = df[df["flag"] == 0]
+        ok_df    = df[df["flag"] == 0]
         n_ok     = len(ok_df)
         n_skip   = int((df["flag"] == 2).sum())
         n_failed = int((df["flag"] == 1).sum())
         mean_hwam = float(ok_df["HWAM"].dropna().mean()) if n_ok else None
 
-        # Build output NetCDF — shape: (planting_window, year, y, x)
         y_vals   = sorted(df["y"].unique())
         x_vals   = sorted(df["x"].unique())
         yi_map   = {v: i for i, v in enumerate(y_vals)}
@@ -769,22 +474,17 @@ def run_simulation(
             },
         )
 
-        # Register CRS on the output dataset so downstream tools can read it correctly.
         for _vname in list(ds_out.data_vars) + list(ds_out.coords):
             ds_out.variables[_vname].encoding.pop("grid_mapping", None)
         ds_out = ds_out.rio.set_spatial_dims(x_dim="x", y_dim="y")
         ds_out = ds_out.rio.write_crs("EPSG:4326")
         ds_out["x"].attrs.update({
-            "standard_name": "longitude",
-            "long_name": "longitude",
-            "units": "degrees_east",
-            "axis": "X",
+            "standard_name": "longitude", "long_name": "longitude",
+            "units": "degrees_east", "axis": "X",
         })
         ds_out["y"].attrs.update({
-            "standard_name": "latitude",
-            "long_name": "latitude",
-            "units": "degrees_north",
-            "axis": "Y",
+            "standard_name": "latitude", "long_name": "latitude",
+            "units": "degrees_north", "axis": "Y",
         })
         ds_out.attrs["Conventions"] = "CF-1.8"
 
@@ -808,29 +508,6 @@ def run_simulation(
         })
     except Exception as exc:
         return _err(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[-800:]}")
-
-
-# ---------------------------------------------------------------------------
-# Tool 6 — list_supported_crops  (informational)
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def list_supported_crops() -> str:
-    """List all crops supported by the DSSAT model and their 2-letter codes."""
-    crops = {
-        "Maize": "MZ", "Wheat": "WH", "Rice": "RI", "Sorghum": "SG",
-        "Millet": "ML", "Soybean": "SB", "Bean": "BN", "Cassava": "CS",
-        "Potato": "PT", "Sugarcane": "SC", "Sugarbeet": "BS",
-        "Sunflower": "SU", "Canola": "CN", "Tomato": "TM",
-        "Cabbage": "CB", "Alfalfa": "AL", "Bermudagrass": "BM",
-    }
-    common_cultivars = {
-        "Maize":  ["IB1072 (tropical)", "PC0002 (temperate)", "MEDIUM (generic)"],
-        "Wheat":  ["IB1015 (spring)", "IB1487 (winter)"],
-        "Bean":   ["IB0001"],
-        "Soybean":["IB0001"],
-    }
-    return _ok({"crops": crops, "example_cultivars": common_cultivars})
 
 
 # ---------------------------------------------------------------------------

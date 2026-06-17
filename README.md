@@ -1,159 +1,199 @@
-# ag-cube-cm
+# ag-cube-cm — Spatial Crop Model Orchestration
 
-**ag-cube-cm** is a memory-efficient Python package for spatial NetCDF datacube processing and process-based crop model orchestration. It lets agro-climatologists and spatial data scientists run pixel-level agricultural simulations at scale — either programmatically or through natural language via an AI assistant.
+**ag-cube-cm** is a Python package for running process-based crop models (PBMs) over spatial domains. It takes pre-built climate and soil datacubes as inputs, runs pixel-level simulations in parallel, and produces yield potential maps — gridded NetCDF outputs showing grain yield (kg/ha) across planting windows, years, and space.
 
-## Features
+The package is the **crop modeling layer** of a two-package workflow. Data acquisition (CHIRPS, CHIRTS, AgERA5, SoilGrids) is handled by the companion package [**aggeodata**](https://github.com/anaguilarar/aggeodata).
 
-- **Spatial Data Engineering**: Downloads and processes climate data (AgERA5 via Copernicus CDS, CHIRPS) and soil properties (SoilGrids WCS) using `xarray` and `dask`.
-- **Strict Configuration**: `Pydantic v2` validates all YAML inputs (`SimulationConfig`) — crop selection, agronomic management, spatial domain.
-- **Process-Based Crop Models**: Registry-based factory pattern (`CropModel` ABC). Supported models:
-  - **DSSAT** — industry-standard crop model, pixel-isolated working directories, C-mode execution.
-  - **Banana_N** — pure-Python banana growth model, runs entirely in memory.
-  - **CAF2021** — agroforestry / coffee-shade model.
-  - **SIMPLE** — generic crop model for development and yield.
-- **Parallel Orchestrator**: `ThreadPool`/`ProcessPool` across all `(pixel × planting-window)` combinations.
-- **Universal Reporter**: Exports simulation outputs to NetCDF or Parquet.
-- **MCP Server**: Exposes all operations as tools that an AI assistant can call via natural language.
+Supported process-based crop models:
+- **[DSSAT](https://dssat.net/)** — industry-standard model covering maize, wheat, rice, soybean, and ~14 other crops.
+- **[CAF2021](https://doi.org/10.1007/s10457-022-00755-6)** — agroforestry model for coffee under shade trees.
+- **[SIMPLE](https://doi.org/10.1016/j.eja.2019.01.009)** — generic single-crop model, easily parameterized.
+- **Banana-N** — pure-Python banana growth and nitrogen dynamics model.
+
+---
+
+## Two-Package Workflow
+
+```
+[aggeodata]                         [ag-cube-cm]
+  download_chirps  ┐                  generate_config
+  download_chirts  ├─► build_climate_datacube ─┐
+  download_agera5  ┘     climate_<suffix>.nc   │
+                                               ├─► run_simulation ─► yield_<suffix>.nc
+  download_soil ──────► build_soil_datacube ───┘     (HWAM kg/ha, planting_window×year×y×x)
+                          soil_<suffix>.nc
+```
+
+`ag-cube-cm` is purely a consumer: it reads the `.nc` datacubes and orchestrates the crop model. It performs no data downloads.
 
 ---
 
 ## Installation
 
 ```bash
-# Core package
+# Core (spatial orchestration only)
 pip install git+https://github.com/anaguilarar/ag-cube-cm.git
 
-# With DSSAT / crop model support
+# With DSSAT and other crop models
 pip install "ag-cube-cm[models] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
 
-# With data download support (requires CDS API key)
-pip install "ag-cube-cm[download] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
-
-# With MCP server (for AI assistant integration)
+# With MCP server (AI assistant integration)
 pip install "ag-cube-cm[mcp] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
 
 # Everything
 pip install "ag-cube-cm[all] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
 ```
 
+> **DSSAT binary:** bundled in `models/dssat/static/bin/` for Linux and Windows. No separate DSSAT installation needed.
+
 ---
 
-## Quick Start — Python API
+## How to Use
 
-### 1. Run a spatial DSSAT simulation
+### Step 1 — Build datacubes with aggeodata
 
-```python
-from ag_cube_cm.config.loader import load_config
-from ag_cube_cm.models.dssat.base import DSSATModel
-import xarray as xr
-
-cfg = load_config("options/my_config.yaml")
-weather_ds = xr.open_dataset(cfg.SPATIAL_INFO.weather_path)
-soil_ds    = xr.open_dataset(cfg.SPATIAL_INFO.soil_path)
-
-# Single pixel
-w_slice = weather_ds.sel(y=-13.5, x=34.0, method="nearest")
-s_slice = soil_ds.sel(y=-13.5, x=34.0, method="nearest")
-
-model = DSSATModel(cfg)
-model.setup_working_directory("test_px")
-model.prepare_inputs(w_slice, s_slice, elevation=0.0)
-model.run_simulation()
-print(model.collect_outputs())   # {"HWAM": 4215.0, ...}
-model.cleanup_working_directory()
-```
-
-### 2. Full spatial run via script
+Install the companion package and build climate and soil datacubes for your region of interest. See the [aggeodata repository](https://github.com/anaguilarar/aggeodata) for details.
 
 ```bash
-python examples/spatial_dssat_run.py --config options/test_dssat.yaml
+pip install aggeodata
 ```
 
-### 3. YAML config example
+The two datacubes you need as inputs:
+
+| File | Dimensions | Variables |
+|------|-----------|-----------|
+| `climate_<suffix>_YYYY_YYYY.nc` | `time × y × x` | `pr` (mm/d), `tasmax` (°C), `tasmin` (°C), `rsds` (J/m²/d) |
+| `soil_<suffix>.nc` | `depth × y × x` | `clay`, `sand`, `bdod`, `wv0033`, `wv1500`, … |
+
+CF variable names from aggeodata (`pr`, `tasmax`, `tasmin`, `rsds`) are automatically remapped to DSSAT-expected names inside `DSSATModel.prepare_inputs()` — no manual renaming needed.
+
+---
+
+### Step 2 — Write a simulation config
 
 ```yaml
+# dssat_maize_hnd.yaml
+
 GENERAL_INFO:
-  country: 'Malawi'
-  country_code: 'MWI'
-  model: 'dssat'
-  working_path: '/tmp/mlw_dssat'    # ← NO spaces in this path
-  dssat_path: null                  # null = use bundled binary
-  ncores: 8
+  country:      'Honduras'
+  country_code: 'HND'
+  model:        'dssat'
+  working_path: 'D:/dssat_runs'   # ← NO spaces (Fortran path constraint)
+  dssat_path:   null              # null = use bundled binary
+  ncores:       8
 
 SPATIAL_INFO:
-  feature_name: 'shapeName'
-  soil_path: 'data/soil_mwi.nc'
-  weather_path: 'data/weather_mwi_2000_2019.nc'
-  output_path: 'malawi_yield.nc'
-  dem_path: null
+  feature_name: 'shapeName'       # column used for sub-region clipping
+  adm_level:    2
+  feature:      null              # null = entire datacube extent
+                                  # e.g. 'Comayagua' = clip to one district
+  weather_path: 'data/climate_hnd_comayagua_2020_2022.nc'
+  soil_path:    'data/soil_hnd_comayagua.nc'
+  output_path:  'results/yield_hnd_comayagua.nc'
+  dem_path:     null
 
 CROP:
-  name: 'Maize'
-  cultivar: 'IB1072'
+  name:     'Maize'
+  cultivar: 'IB1072'    # tropical maize; see list_supported_crops for options
 
 MANAGEMENT:
-  planting_date: '2000-11-01'
-  n_planting_windows: 6
-  planting_window_days: 7
-  fertilizer_schedule:
-    - days_after_planting: 5
-      n_kg_ha: 50.0
-      p_kg_ha: 30.0
+  planting_date:        '2020-05-01'
+  n_planting_windows:   4           # number of staggered planting scenarios
+  planting_window_days: 14          # days between consecutive windows
+  # Optional fertilizer schedule (rainfed = omit):
+  # fertilizer_schedule:
+  #   - days_after_planting: 15
+  #     n_kg_ha: 60.0
+  #     p_kg_ha: 30.0
 ```
 
-> **Important:** `working_path` must not contain spaces. DSSAT's `DSSATPRO.V48`
-> config file is whitespace-delimited; a space in the path corrupts the model
-> entry and causes a silent `rc=99` error.
+> **`working_path` must not contain spaces.** DSSAT's `DSSATPRO.V48` file is whitespace-delimited; a space in the path corrupts the model entry and causes a silent `rc=99` error.
 
 ---
 
-## AI-Assisted Workflows (MCP + Skill)
-
-The package ships an MCP server that exposes all operations as tools.
-Once registered, an AI assistant (Claude + the `spatial-crop-modeler` skill)
-can drive the full workflow — data download, config generation, simulation —
-from a single natural-language request.
-
-### Step 1 — Authenticate AgERA5 (Required for Weather Downloads)
-
-To access AgERA5 data, users must provide account credentials. This requires two key pieces of information:
-
-- **Email**: The email address used to register the AgERA5 account.
-- **API Code**: A unique code available in the profile settings after account creation.
-
-The login must be done through: [https://cds.climate.copernicus.eu/datasets/sis-agrometeorological-indicators?tab=overview](https://cds.climate.copernicus.eu/datasets/sis-agrometeorological-indicators?tab=overview).
-
-The following Python snippet is used to authenticate and access AgERA5 data by creating your credentials file:
+### Step 3 — Run the simulation
 
 ```python
-import os
+from ag_cube_cm.mcp_server import run_simulation
+import json
 
-YOURUSERAPICODE = 'YOURAPI'
-YOUREMAIL = 'YOUREMAIL'
+result = json.loads(run_simulation(config_path="dssat_maize_hnd.yaml"))
 
-with open(os.path.expanduser("~/.cdsapirc"), "w") as f:
-    f.write("url: https://cds.climate.copernicus.eu/api\nkey: {}\nemail: {}".format(YOURUSERAPICODE, YOUREMAIL))
+print(f"Mean yield : {result['mean_hwam_kg_ha']} kg/ha")
+print(f"Pixels OK  : {result['pixels_ok']}")
+print(f"Output     : {result['output_path']}")
 ```
 
-### Step 2 — Install MCP support
+Or run all three steps end-to-end with the bundled example script:
 
-If you installed from GitHub (no local clone):
 ```bash
-pip install "ag-cube-cm[mcp] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
+python examples/end_to_end_workflow.py
 ```
 
-If you cloned the repository locally (recommended for development — edits to `src/` are picked up immediately):
-```bash
-cd ag-cube-cm
-pip install -e ".[mcp]"
+---
+
+### Yield output structure
+
+The output NetCDF (`yield_<suffix>.nc`) has four dimensions:
+
+```
+Dimensions : planting_window × year × y × x
+Variables  :
+  HWAM (kg/ha)  — grain yield at maturity
+  flag          — 0 = ok, 1 = skipped (no data), 2 = model error
 ```
 
-> **Important:** The non-editable install copies files to `site-packages`. Any edits you make to `src/` afterwards will **not** be reflected in the running MCP server until you reinstall. Use the editable install when developing.
+Typical post-processing:
 
-### Step 3 — Register the server with Claude Code
+```python
+import xarray as xr
+import matplotlib.pyplot as plt
 
-Create `.claude/mcp_config.json` in your project root (or in
-`~/.claude/mcp_config.json` for global access):
+ds   = xr.open_dataset("results/yield_hnd_comayagua.nc")
+hwam = ds["HWAM"]   # (planting_window, year, y, x)
+
+# Mean potential yield across all windows and years
+mean_yield = hwam.mean(dim=["planting_window", "year"])
+
+# Inter-annual variability (CV %)
+cv = hwam.std(dim="year").mean(dim="planting_window") / mean_yield * 100
+
+# Best planting window (maximises mean yield)
+best_window = hwam.mean(dim="year").argmax(dim="planting_window")
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+mean_yield.plot(ax=axes[0], cmap="YlGn",    cbar_kwargs={"label": "Mean yield (kg/ha)"})
+cv.plot(        ax=axes[1], cmap="RdYlGn_r",cbar_kwargs={"label": "CV (%)"})
+best_window.plot(ax=axes[2], cmap="viridis", cbar_kwargs={"label": "Best window (index)"})
+plt.tight_layout()
+plt.savefig("yield_map.png", dpi=150)
+```
+
+---
+
+## Full End-to-End Example
+
+See [`examples/end_to_end_workflow.py`](examples/end_to_end_workflow.py) for a complete
+runnable script covering:
+
+1. aggeodata config (CHIRPS + CHIRTS + AgERA5)
+2. Climate data download → datacube assembly
+3. SoilGrids download → soil datacube assembly
+4. DSSAT simulation across all pixels × planting windows
+5. 3-panel yield distribution map (mean yield, CV%, optimal planting window)
+
+Region: Honduras — Comayagua valley | Period: 2020–2022 | Crop: Maize IB1072
+
+---
+
+## AI-Assisted Workflow (MCP)
+
+The package ships an MCP server so that an AI assistant (e.g. Claude Code) can drive
+the full workflow from a single natural-language request.
+
+### Register the server
+
+Add to `.claude/mcp_config.json` (or `~/.claude/mcp_config.json` for global):
 
 ```json
 {
@@ -161,135 +201,60 @@ Create `.claude/mcp_config.json` in your project root (or in
     "ag-cube-cm": {
       "command": "python",
       "args": ["-m", "ag_cube_cm.mcp_server"],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
-      },
-      "description": "Download AgERA5/CHIRPS/SoilGrids data and run DSSAT crop simulations."
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" }
     }
   }
 }
 ```
 
-### Step 4 — Start Claude Code and load the command
-
-To use the custom skill, you must first have the `.claude` folder available locally. You can do this by cloning the repository:
-
+Start the server:
 ```bash
-git clone https://github.com/anaguilarar/ag-cube-cm.git
-cd ag-cube-cm
-```
-*(Alternatively, you can simply download the `.claude` folder into your working directory).*
-
-Next, start Claude Code in that directory:
-
-```bash
-claude
+python -m ag_cube_cm.mcp_server
 ```
 
-Once Claude Code is running, invoke the bundled slash command:
+### Available tools
 
-```
-/spatial-crop-modeler
-```
+| Tool | Key parameters | What it does |
+|------|---------------|-------------|
+| `list_admin_units` | `country_code`, `adm_level` | Lists district/department names — call before simulation to verify `feature` names |
+| `list_supported_crops` | — | Lists all supported crops and example cultivar IDs |
+| `generate_config` | `country`, `weather_path`, `soil_path`, `crop`, `cultivar`, `planting_date`, `ncores`, `save_to` | Generates and saves a simulation YAML config |
+| `run_simulation` | `config_path`, `feature`, `adm_level`, `max_pixels` | Runs the crop model on all pixels × planting windows |
 
-Then describe what you want in plain language. The assistant asks clarifying
-questions, then calls the MCP tools in the correct order automatically.
+> **Data downloads** (`download_weather`, `download_soil`, `build_climate_datacube`, `build_soil_datacube`) are in the **aggeodata** MCP server. Use that server first, then pass the resulting `.nc` paths here.
+
+### Output chaining
+
+| After calling (aggeodata) | Read field | Pass to ag-cube-cm |
+|---------------------------|-----------|-------------------|
+| `build_climate_datacube` | `output_path` | `weather_path` in `generate_config` |
+| `build_soil_datacube` | `output_path` | `soil_path` in `generate_config` |
+| `generate_config` | `save_path` | `config_path` in `run_simulation` |
 
 ### Example conversation
 
 ```
-You:     I want to simulate maize yield in Mwanza district, Malawi for 2010-2012,
-         planting on 2010-11-01 with 5 windows, no fertilizer. Use 6 cores.
-
-Claude:  What working path should DSSAT use? (must have no spaces)
-         Do you already have weather and soil files, or should I download them?
-
-You:     Download everything. Save runs to D:/tmp_dssat.
-
-Claude:  [list_admin_units(country_code="MWI")]  → verifying 'Mwanza' is a valid district
-
-         [download_weather(country_code="MWI", year_start=2010, year_end=2012,
-                           feature="Mwanza", ncores=6)]
-         → downloads Mwanza extent only, builds weather_2010_2012.nc
-
-         [download_soil(country_code="MWI", feature="Mwanza")]
-         → builds soil_mwi.nc
-
-         [generate_config(..., feature="Mwanza", ncores=6,
-                          save_to="D:/tmp_dssat/mwanza.yaml")]
-         → mwanza.yaml created
-
-         [run_simulation(config_path="D:/tmp_dssat/mwanza.yaml", feature="Mwanza")]
-         → 85 pixels × 5 windows simulated
-
-         Results saved to mwanza_yield.nc
-         ok=425  skip=0  failed=0
-         Mean HWAM: 4 120 kg/ha
-
-         Per-window summary:
-           W00 (2010-11-01): mean=4 050  min=1 200  max=6 100 kg/ha
-           W01 (2010-11-08): mean=4 150  ...
-```
-
-### Available MCP tools
-
-| Tool | Key parameters | What it does |
-|------|---------------|-------------|
-| `list_supported_crops` | — | Lists all supported crops and example cultivar IDs |
-| `list_admin_units` | `country_code`, `adm_level` | Lists district / department names for a country — call before download to verify `feature` names |
-| `download_weather` | `country_code`, `year_start`, `year_end`, `source` (`"agera5"` / `"chirps"`), `feature`, `adm_level`, `ncores` | Downloads AgERA5 + CHIRPS weather data clipped to the region extent and builds a merged multi-temporal NetCDF datacube. Returns `output_path` (the `.nc` file). |
-| `download_soil` | `country_code`, `feature`, `adm_level`, `depths`, `variables` | Downloads SoilGrids layers clipped to the region extent and builds a multi-depth NetCDF datacube. Returns `output_path` (the `.nc` file). |
-| `generate_config` | `country`, `country_code`, `model`, `weather_path`, `soil_path`, `crop`, `cultivar`, `planting_date`, `feature`, `adm_level`, `ncores`, `save_to` | Generates and saves a simulation YAML config. Always pass `save_to` — without it the file is never written to disk. |
-| `run_simulation` | `config_path`, `feature`, `adm_level`, `max_pixels` | Runs the crop model on all pixels × planting windows. `feature` clips the datacubes to a district boundary before building the pixel list. |
-
-#### Output chaining
-
-| After calling | Read field | Pass as |
-|---------------|-----------|---------|
-| `download_weather` | `output_path` | `weather_path` in `generate_config` |
-| `download_soil` | `output_path` | `soil_path` in `generate_config` |
-| `generate_config` | `save_path` | `config_path` in `run_simulation` |
-
-### Sub-country simulations (district / department level)
-
-Running a full country is expensive (thousands of pixels). Pass `feature` to **every** tool
-that accepts it to restrict downloads, config, and simulation to one district:
-
-```
-You:     Simulate maize in Mwanza district, Malawi, 2010-2012,
-         planting 2010-11-01, 4 windows, no fertilizer, 6 cores.
+You:     Simulate maize yield potential in Mwanza district, Malawi,
+         2010–2012, planting 2010-11-01, 4 windows, no fertilizer, 8 cores.
+         I already have weather_mwi.nc and soil_mwi.nc.
 
 Claude:  [list_admin_units(country_code="MWI", adm_level=2)]
-         → confirms "Mwanza" is valid
+         → confirms "Mwanza" is a valid district name
 
-         [download_weather(country_code="MWI", year_start=2010, year_end=2012,
-                           feature="Mwanza", adm_level=2, ncores=6)]
-         → downloads only the Mwanza extent (8 km buffered, WGS84)
-         → builds weather_2010_2012.nc  ← returned as output_path
+         [generate_config(country="Malawi", country_code="MWI",
+                          model="dssat", crop="Maize", cultivar="IB1072",
+                          weather_path="weather_mwi.nc",
+                          soil_path="soil_mwi.nc",
+                          planting_date="2010-11-01",
+                          n_planting_windows=4,
+                          ncores=8,
+                          save_to="mwanza.yaml")]
 
-         [download_soil(country_code="MWI", feature="Mwanza", adm_level=2)]
-         → builds soil_mwi.nc  ← returned as output_path
-
-         [generate_config(..., feature="Mwanza", adm_level=2, ncores=6,
-                          save_to="D:/tmp/mwanza.yaml")]
-         → mwanza.yaml created
-
-         [run_simulation(config_path="D:/tmp/mwanza.yaml",
+         [run_simulation(config_path="mwanza.yaml",
                          feature="Mwanza", adm_level=2)]
-         → clips both datacubes to Mwanza polygon
-         → 85 pixels × 4 windows running...
-         → mean HWAM: 4 120 kg/ha
-```
-
-**How the spatial clipping works:** `feature` triggers a GeoBoundaries API lookup,
-projects the polygon to the SoilGrids Homolosine CRS (ESRI:54052), adds an 8 km buffer
-to cover edge pixels at ~5 km resolution, then reprojects to WGS84 (1-decimal precision).
-No local shapefile is needed. This typically reduces download size and pixel count by 10–100×.
-
-### Start the server manually
-
-```bash
-python -m ag_cube_cm.mcp_server
+         → 87 pixels × 4 windows × 3 years
+         → mean HWAM: 4 210 kg/ha
+         → output: mwanza_yield.nc
 ```
 
 ---
@@ -298,15 +263,25 @@ python -m ag_cube_cm.mcp_server
 
 ```
 src/ag_cube_cm/
-├── config/          Pydantic v2 SimulationConfig — YAML validation
-├── ingestion/       AgERA5Downloader, CHIRPSDownloader, SoilGridsDownloader, get_admin_boundary
+├── config/
+│   ├── schemas.py     Pydantic v2 SimulationConfig — validates all YAML inputs
+│   └── loader.py      load_config() — parse + validate YAML
+├── ingestion/
+│   └── boundaries.py  get_admin_boundary() — GeoBoundaries API lookup for sub-region clipping
 ├── models/
-│   ├── base.py      CropModel ABC
-│   ├── dssat/       DSSATModel — Fortran file writers, subprocess runner
-│   ├── banana_n/    Pure-Python banana model
-│   └── factory.py   @register_model decorator
-├── spatial/         SpatialCM orchestrator, SpatialReporter
-└── mcp_server.py    FastMCP server (AI assistant integration)
+│   ├── base.py        CropModel ABC — prepare_inputs / run_simulation / collect_outputs
+│   ├── factory.py     @register_model decorator + model_factory()
+│   ├── dssat/         DSSATModel — Fortran file writers (.WTH .SOL .X), subprocess runner, Summary.OUT parser
+│   ├── banana_n/      Pure-Python banana growth + nitrogen model
+│   └── caf2021/       Coffee-shade agroforestry model
+├── spatial/
+│   ├── data.py        SpatialData — lazy dask-backed NetCDF loader
+│   ├── raster_ops.py  clip_to_bbox, mask_with_geometry, get_roi_data
+│   ├── spatial_cm.py  SpatialCM — parallel pixel orchestrator (ThreadPool / ProcessPool)
+│   └── reporter.py    SpatialReporter — NetCDF / Parquet output writer
+├── transform/
+│   └── soil_cube.py   SoilDataCubeBuilder — stacks SoilGrids GeoTIFFs into depth×y×x NetCDF
+└── mcp_server.py      FastMCP server (4 tools for AI-assisted workflows)
 ```
 
 ---
@@ -322,13 +297,25 @@ src/ag_cube_cm/
 | Millet | ML | | Sunflower | SU |
 | Soybean | SB | | Canola | CN |
 
+Run `list_supported_crops()` from the MCP server or Python API for the full list with example cultivar IDs.
+
 ---
 
 ## Requirements
 
 - Python ≥ 3.10
-- DSSAT 4.8 binary — bundled in `static/bin/` (Linux + Windows)
-- CDS API key — required only for AgERA5 downloads (`~/.cdsapirc`)
+- DSSAT binary — bundled in `models/dssat/static/bin/` (Linux + Windows)
+- Input datacubes built with [aggeodata](https://github.com/anaguilarar/aggeodata)
+
+---
+
+## References
+
+Lizaso, J.I., et al. (2011). DSSAT v4.5 crop models. *Agricultural Systems*.
+
+Van Oijen, M., Haggar, J., et al. (2022). Ecosystem services from coffee agroforestry in Central America: estimation using the CAF2021 model. *Agroforestry Systems*. https://doi.org/10.1007/s10457-022-00755-6
+
+Zhao, C., et al. (2019). A SIMPLE crop model. *European Journal of Agronomy*. https://doi.org/10.1016/j.eja.2019.01.009
 
 ---
 
