@@ -386,8 +386,10 @@ class SoilDataCubeBuilder:
         Variable used as the spatial resolution reference for co-registration.
         Default: ``"wv1500"``.
     crs : str
-        Native CRS of the SoilGrids files.  Default: ``"ESRI:54052"``
-        (Interrupted Goode Homolosine).
+        Native CRS of the SoilGrids WCS files (those without embedded CRS
+        metadata).  The explicit PROJ string is used instead of ``"ESRI:54052"``
+        because some GDAL builds mis-apply that code, producing bad extents
+        and gaps in the assembled cube.
     target_crs : str | None
         Reproject the final cube to this CRS.  ``None`` → keep native.
         Default: ``"EPSG:4326"``.
@@ -409,7 +411,7 @@ class SoilDataCubeBuilder:
         variables: list[str],
         extent: list[float] | None = None,
         reference_variable: str = "wv1500",
-        crs: str = "ESRI:54052",
+        crs: str = "+proj=igh +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs",
         target_crs: str | None = "EPSG:4326",
     ) -> None:
         self.data_folder = data_folder

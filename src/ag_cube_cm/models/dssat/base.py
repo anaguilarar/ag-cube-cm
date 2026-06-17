@@ -374,7 +374,7 @@ class DSSATModel(CropModel):
         "millet":       "MLCER",
         "rice":         "RICER",
         "sorghum":      "SGCER",
-        "wheat":        "WHCER",
+        "wheat":        "WHAPS",
         "sweetcorn":    "MZCER",
         "soybean":      "CRGRO",
         "bean":         "CRGRO",
@@ -501,12 +501,16 @@ class DSSATModel(CropModel):
     def run_simulation(self) -> None:
         """Execute the DSSAT binary via subprocess.
 
-        Two execution paths:
-        1. Config-provided — ``bin_path`` exists on disk: use it directly with
+        Three execution paths (in priority order):
+        1. Config-provided ``bin_path`` exists on disk → use it directly with
            ``dssat_path`` as DSSAT_HOME.
-        2. Bundled bootstrap — no ``bin_path`` (or path is missing): copy
-           ``static/`` to ``<dssat_path or tempdir>/DSSAT048/`` and run from
-           there (follows the DSSATTools pattern).
+        2. DSSATTools available → import its already-bootstrapped paths
+           (DSSAT_HOME, BIN_PATH, CRD_PATH, SLD_PATH, STD_PATH).  DSSATTools
+           handles the static-file copy at import time so nothing extra is done
+           here.
+        3. Fallback → copy ag_cube_cm's bundled ``static/`` folder to
+           ``<dssat_path or tempdir>/DSSAT048/`` (used when DSSATTools is not
+           installed).
         """
         cfg_bin   = getattr(self.config.GENERAL_INFO, 'bin_path',   None)
         cfg_home  = getattr(self.config.GENERAL_INFO, 'dssat_path', None)
@@ -517,11 +521,23 @@ class DSSATModel(CropModel):
             dssat_home = Path(cfg_home or os.path.dirname(cfg_bin))
             logger.debug("[Pixel %s] Using config-supplied DSSAT binary: %s", self.pixel_id, bin_path)
         else:
-            # Path 2 — bootstrap from bundled static/
-            tmp_base = cfg_home or tempfile.gettempdir()
-            logger.debug("[Pixel %s] Bootstrapping DSSAT from static/ into %s", self.pixel_id, tmp_base)
-            dssat_home, bin_path_obj = self._bootstrap_dssat_home(tmp_base)
-            bin_path = str(bin_path_obj)
+            try:
+                # Path 2 — delegate to DSSATTools bootstrap
+                from DSSATTools.run import (  # type: ignore[import]
+                    DSSAT_HOME as DT_HOME,
+                    BIN_PATH   as DT_BIN,
+                )
+                dssat_home = Path(DT_HOME)
+                bin_path   = DT_BIN
+                logger.debug("[Pixel %s] Using DSSATTools bootstrap: %s", self.pixel_id, dssat_home)
+            except ImportError:
+                # Path 3 — bundled static/ fallback
+                tmp_base = cfg_home or tempfile.gettempdir()
+                logger.debug(
+                    "[Pixel %s] Bootstrapping DSSAT from static/ into %s", self.pixel_id, tmp_base
+                )
+                dssat_home, bin_path_obj = self._bootstrap_dssat_home(tmp_base)
+                bin_path = str(bin_path_obj)
 
         # Copy crop .CUL/.ECO/.SPE into run dir (DSSAT needs them locally).
         self._copy_genotype_files()
