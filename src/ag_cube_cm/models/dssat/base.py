@@ -368,7 +368,8 @@ class DSSATModel(CropModel):
     _DSSAT_VERSION: str = "048"
     _bootstrap_lock: threading.Lock = threading.Lock()  # one bootstrap at a time
 
-    # DSSAT module name by crop (used in DSSATPRO config file M-line)
+    # Simulation module name by crop — written to DSSATPRO M-line and X-file SMODEL.
+    # Legumes share the CRGRO engine regardless of species.
     _CROPS_MODULES: dict = {
         "maize":        "MZCER",
         "millet":       "MLCER",
@@ -390,19 +391,34 @@ class DSSATModel(CropModel):
         "canola":       "CNOIL",
     }
 
+    # Genotype file prefix by crop — names the .CUL/.ECO/.SPE files in static/Genotype/.
+    # Differs from the simulation module for legumes (CRGRO engine, crop-specific files).
+    _GENOTYPE_PREFIX: dict = {
+        "bean":         "BNGRO",
+        "soybean":      "SBGRO",
+        "peanut":       "PNGRO",
+        "tomato":       "TMGRO",
+        "cabbage":      "CBGRO",
+        "alfalfa":      "ALGRO",
+        "bermudagrass": "BMGRO",
+    }
+
+    def _get_genotype_prefix(self) -> str:
+        """Return the genotype file prefix for the current crop."""
+        return self._GENOTYPE_PREFIX.get(
+            self.crop,
+            self._CROPS_MODULES.get(self.crop, "MZCER"),
+        )
+
     def _copy_genotype_files(self) -> None:
         """Copy crop-specific .CUL / .ECO / .SPE files from static/Genotype/
         into self.working_dir so DSSAT can find them without relying on CRD path
         resolution (which varies across DSSAT binary versions).
         """
-        crop_module = (
-            "CRGRO"
-            if self.crop_code == "BN"
-            else self._CROPS_MODULES.get(self.crop, "MZCER")
-        )
+        prefix = self._get_genotype_prefix()
         genotype_dir = self._STATIC_PATH / "Genotype"
         for ext in ("CUL", "ECO", "SPE"):
-            src = genotype_dir / f"{crop_module}{self._DSSAT_VERSION}.{ext}"
+            src = genotype_dir / f"{prefix}{self._DSSAT_VERSION}.{ext}"
             if src.exists():
                 shutil.copy2(str(src), str(self.working_dir / src.name))
             else:
@@ -423,12 +439,7 @@ class DSSATModel(CropModel):
         is_windows = platform.system().lower() == "windows"
         confile = "DSSATPRO.V48" if is_windows else "DSSATPRO.L48"
 
-        # Resolve module name (CRGRO for legumes, otherwise from map)
-        crop_module = (
-            "CRGRO"
-            if self.crop_code == "BN"
-            else self._CROPS_MODULES.get(self.crop, "MZCER")
-        )
+        crop_module = self._CROPS_MODULES.get(self.crop, "MZCER")
 
         def _abs(path: Path) -> str:
             """Absolute path string, no trailing separator."""
