@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class DSSATModel(CropModel):
     """
     DSSAT Implementation of the CropModel ABC.
-    
+
     This model orchestrates the writing of strict fixed-width Fortran files
     (.WTH, .SOL, .X), dynamically generates a batch file (DSSBatch.v48),
     executes the binary via subprocess, and parses Summary.OUT.
@@ -38,7 +38,6 @@ class DSSATModel(CropModel):
 
     def __init__(self, config) -> None:
         super().__init__(config)
-        
         self.crop = getattr(self.config.CROP, 'name', 'Maize').lower()
         self.cultivar = getattr(self.config.CROP, 'cultivar', None)
         self.crop_code = self._get_crop_code(self.crop)
@@ -56,6 +55,16 @@ class DSSATModel(CropModel):
             "bean": "BN", "cassava": "CS"
         }
         return codes.get(crop.lower(), "MZ")
+
+    def _get_maturity_days(self) -> int:
+        """Approximate days from planting to physiological maturity.
+
+        Used to (1) decide whether the last simulated season's harvest would
+        cross into a year with no weather data — drop the season if so;
+        (2) write HDATE in the X-file (DSSAT parses it even though HARVS=R
+        means harvest at maturity, not on this date).
+        """
+        return self._MATURITY_DAYS.get(self.crop, 120)
 
     def prepare_inputs(self, weather_slice: xr.Dataset, soil_slice: xr.Dataset,
                        elevation: float = -99.0) -> None:
@@ -93,7 +102,14 @@ class DSSATModel(CropModel):
             src_crs = soil_slice.rio.crs
         except Exception:
             pass
-        if src_crs and src_crs.to_epsg() != 4326:
+
+        # Explicit CRS check: to_epsg() returns None for non-EPSG projections like
+        # IGH (SoilGrids native). Treat None as "definitely not 4326" and reproject.
+        needs_reproject = False
+        if src_crs is not None:
+            src_epsg = src_crs.to_epsg()
+            needs_reproject = (src_epsg != 4326)
+        if needs_reproject:
             transformer = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
             lon, lat = transformer.transform(raw_x, raw_y)
         else:
@@ -124,9 +140,24 @@ class DSSATModel(CropModel):
                 )
                 planting_year = pdate_dt.year
                 last_wth_year = int(pd.to_datetime(df_wth['date']).dt.year.max())
-                # If harvest (~200 days after planting) crosses into the next calendar year,
-                # the last simulated season would need weather past last_wth_year — drop it.
-                harvest_crosses_year = (pdate_dt + timedelta(days=200)).year > pdate_dt.year
+
+                # Sanity: weather must reach at least the planting year. Clamping to
+                # NYERS=1 here would just push the failure into DSSAT (rc=99); fail
+                # fast with a clear message so the caller can fix the date range.
+                if last_wth_year < planting_year:
+                    raise RuntimeError(
+                        f"Weather data ends in {last_wth_year} but planting is in "
+                        f"{planting_year}. Extend the weather datacube to cover the "
+                        f"planting year, or change planting_date."
+                    )
+
+                # If harvest (maturity days after planting) crosses into the next
+                # calendar year, the last simulated season would need weather past
+                # last_wth_year — drop it.
+                maturity_days = self._get_maturity_days()
+                harvest_crosses_year = (
+                    pdate_dt + timedelta(days=maturity_days)
+                ).year > pdate_dt.year
                 nyers_raw = last_wth_year - planting_year + 1
                 self._nyers = max(1, nyers_raw - (1 if harvest_crosses_year else 0))
 
@@ -140,9 +171,8 @@ class DSSATModel(CropModel):
         """
         Write the .WTH file with strict Fortran 0-padded spacing.
         Maintains the exact column spacing required by DSSAT.
+        Groups by year to write annual weather files.
         """
-        file_path = self.working_dir / "WTHE0001.WTH"
-
         # DSSAT requires strictly chronological rows — sort by date first.
         df_wth = df_wth.copy()
         # Accept either 'date' or 'time' as the timestamp column.
@@ -156,17 +186,36 @@ class DSSATModel(CropModel):
         # DSSAT to force-harvest on the first missing date.
         full_range = pd.date_range(df_wth['_date_parsed'].min(),
                                    df_wth['_date_parsed'].max(), freq='D')
-        if len(full_range) > len(df_wth):
+        n_missing = len(full_range) - len(df_wth)
+        if n_missing > 0:
             df_wth = (df_wth.set_index('_date_parsed')
-                            .reindex(full_range)
-                            .interpolate(method='linear')
-                            .reset_index()
-                            .rename(columns={'index': '_date_parsed'}))
+                        .reindex(full_range)
+                        .interpolate(method='linear')
+                        .reset_index()
+                        .rename(columns={'index': '_date_parsed'}))
             df_wth['date'] = df_wth['_date_parsed']
+            # Linear interpolation of precipitation across long gaps is unrealistic
+            # (rainfall is intermittent, not smooth). Warn loud enough that data
+            # quality issues surface — but don't abort, since the alternative is a
+            # silent DSSAT force-harvest on the first missing day.
+            if n_missing > 5:
+                logger.warning(
+                    "[Pixel %s] Filled %d missing weather days via linear "
+                    "interpolation — gaps > 5 days may yield unrealistic "
+                    "precipitation; verify the source datacube.",
+                    getattr(self, 'pixel_id', '?'), n_missing,
+                )
+            else:
+                logger.debug(
+                    "[Pixel %s] Filled %d missing weather day(s) via interpolation.",
+                    getattr(self, 'pixel_id', '?'), n_missing,
+                )
 
-        df_wth = df_wth.drop(columns=['_date_parsed'])
+        df_wth['_year'] = pd.to_datetime(df_wth['date']).dt.year
 
         # Calculate Long-Term Average Temp (TAV) and Amplitude (AMP)
+        tav = 20.0
+        amp = 5.0
         if 'tmax' in df_wth.columns and 'tmin' in df_wth.columns:
             tav = ((df_wth['tmax'] + df_wth['tmin']) / 2).mean()
 
@@ -175,30 +224,25 @@ class DSSATModel(CropModel):
             df_wth['month'] = pd.to_datetime(df_wth['date']).dt.month
             monthly_mean = ((df_wth['tmax'] + df_wth['tmin']) / 2).groupby(df_wth['month']).mean()
             amp = (monthly_mean.max() - monthly_mean.min()) / 2
-        else:
-            tav = 20.0
-            amp = 5.0
 
         elev_str = f"{int(elevation):5d}" if elevation != -99.0 else "  -99"
 
-        with open(file_path, "w") as f:
-            f.write("*WEATHER DATA : EXPS\n\n")
-            f.write("@ INSI      LAT     LONG  ELEV   TAV   AMP REFHT WNDHT\n")
-            f.write(f"  EXPS {lat:8.3f} {lon:8.3f} {elev_str} {tav:5.1f} {amp:5.1f}   -99   -99\n")
-            f.write("@DATE  SRAD  TMAX  TMIN  RAIN\n")
-            
-            for _, row in df_wth.iterrows():
-                # Date format: YYJJJ (e.g., 2001-01-01 -> 01001)
-                yyjjj = pd.to_datetime(row['date']).strftime("%y%j")
-                
-                srad = row.get('solar_radiation', row.get('srad', -99.0))
-                tmax = row.get('tmax', -99.0)
-                tmin = row.get('tmin', -99.0)
-                rain = row.get('precipitation', row.get('rain', -99.0))
-                
-                # Write row with strict Fortran spacing.
-                # @DATE(5) + Space(1) + SRAD(5) + Space(1) + TMAX(5)...
-                f.write(f"{yyjjj:>5} {srad:5.1f} {tmax:5.1f} {tmin:5.1f} {rain:5.1f}\n")
+        for yr, group in df_wth.groupby('_year'):
+            yy = str(yr)[2:]
+            file_path = self.working_dir / f"WTHE{yy}01.WTH"
+            with open(file_path, "w") as f:
+                f.write(f"$WEATHER DATA : WTHE\n\n")
+                f.write("@ INSI      LAT     LONG  ELEV   TAV   AMP REFHT WNDHT  CCO2\n")
+                f.write(f"  WTHE {lat:8.3f} {lon:8.3f} {elev_str} {tav:5.1f} {amp:5.1f}   -99   -99      \n")
+                f.write("@  DATE  TMAX  TMIN  RAIN  SRAD\n")
+                for _, row in group.iterrows():
+                    yyyyjjj = pd.to_datetime(row['date']).strftime("%Y%j")
+                    srad = row.get('solar_radiation', row.get('srad', -99.0))
+                    tmax = row.get('tmax', -99.0)
+                    tmin = row.get('tmin', -99.0)
+                    rain = row.get('precipitation', row.get('rain', -99.0))
+                    # Write row with strict Fortran spacing and matching DSSATTools order
+                    f.write(f"{yyyyjjj:>7} {tmax:5.1f} {tmin:5.1f} {rain:5.1f} {srad:5.1f}\n")
 
     def _write_sol(self, df_sol: pd.DataFrame, lat: float, lon: float) -> None:
         """
@@ -206,10 +250,8 @@ class DSSATModel(CropModel):
         """
         file_path = self.working_dir / "TR.SOL"
         country = getattr(self.config.GENERAL_INFO, 'country', 'USA')
-        
         # Default bulk averages for top properties
-        salb, slu1, sldr = 0.13, 1.0, 0.25 
-        
+        salb, slu1, sldr = 0.13, 1.0, 0.25
         with open(file_path, "w") as f:
             f.write("*SOILS: EXPS\n\n")
             f.write("*TRAN0001  UNCLASSIFIED             SCL       100\n")
@@ -218,7 +260,6 @@ class DSSATModel(CropModel):
             f.write("@ SCOM  SALB  SLU1  SLDR  SLRO  SLNF  SLPF  SMHB  SMPX  SMKE\n")
             f.write(f"   -99 {salb:5.2f} {slu1:5.1f} {sldr:5.2f}  73.0  1.00  1.00 -99.0 -99.0 -99.0\n")
             f.write("@  SLB  SLMH  SLLL  SDUL  SSAT  SRGF  SSKS  SBDM  SLOC  SLCL  SLSI  SLCF  SLNI  SLHW  SLHB  SCEC  SADC\n")
-            
             # Write layers, storing (depth, slll, sdul) for use in IC section of MZX
             self._soil_layers = []
             for _, row in df_sol.iterrows():
@@ -259,11 +300,16 @@ class DSSATModel(CropModel):
 
         # Simulation start = 1 month before planting
         sdate = (pdate - timedelta(days=30)).strftime("%y%j")
-        # Harvest reference date = planting + 200 days (HARVS=R means DSSAT harvests at maturity)
-        hdate = (pdate + timedelta(days=200)).strftime("%y%j")
+        # Harvest reference date = planting + crop-specific maturity days.
+        # HARVS=R means DSSAT harvests at physiological maturity, not on this date,
+        # but the field must still be parseable.
+        maturity_days = self._get_maturity_days()
+        hdate = (pdate + timedelta(days=maturity_days)).strftime("%y%j")
         # Planting window ± 3 days for automatic management
         pfrst = (pdate - timedelta(days=3)).strftime("%y%j")
         plast = (pdate + timedelta(days=3)).strftime("%y%j")
+
+        wsta_id = "WTHE" + sdate[:2] + "01"
 
         fert_apps = getattr(self.config.MANAGEMENT, 'fertilizer_schedule', [])
         has_fert = bool(fert_apps)
@@ -290,7 +336,7 @@ class DSSATModel(CropModel):
 
             f.write("*FIELDS\n")
             f.write("@L ID_FIELD WSTA....  FLSA  FLOB  FLDT  FLDD  FLDS  FLST SLTX  SLDP  ID_SOIL    FLNAME\n")
-            f.write(" 1 UFWA0001 WTHE0001   -99   -99   -99   -99   -99   -99   SL   -99  TRAN0001   -99\n")
+            f.write(f" 1 UFWA0001 {wsta_id:<8}   -99   -99   -99   -99   -99   -99   SL   -99  TRAN0001   -99\n")
             f.write("@L ...........XCRD ...........YCRD .....ELEV .............AREA .SLEN .FLWR .SLAS FLHST FHDUR\n")
             f.write(f" 1 {lon:15.3f} {lat:15.3f}       -99               -99   -99   -99   -99 FH301     0\n\n")
 
@@ -375,7 +421,7 @@ class DSSATModel(CropModel):
         "millet":       "MLCER",
         "rice":         "RICER",
         "sorghum":      "SGCER",
-        "wheat":        "WHAPS",
+        "wheat":        "CSCER",
         "sweetcorn":    "MZCER",
         "soybean":      "CRGRO",
         "bean":         "CRGRO",
@@ -401,6 +447,35 @@ class DSSATModel(CropModel):
         "cabbage":      "CBGRO",
         "alfalfa":      "ALGRO",
         "bermudagrass": "BMGRO",
+        "wheat":        "WHCER",
+    }
+
+    # Approximate days from planting to physiological maturity. Used in two places:
+    #  (1) prepare_inputs — decides whether the last NYERS season would need
+    #      weather beyond the datacube's last year (drop it if so).
+    #  (2) _write_mzx — writes HDATE in the X-file. DSSAT parses it for validation
+    #      even though HARVS=R harvests at maturity, not on this date.
+    # Perennials use 365 to indicate a full-year window. Crops absent from this
+    # table fall back to 120 days (maize default).
+    _MATURITY_DAYS: dict = {
+        "maize":        120,
+        "millet":       100,
+        "rice":         140,
+        "sorghum":      120,
+        "sweetcorn":    100,
+        "wheat":        180,
+        "bean":          90,
+        "soybean":      130,
+        "tomato":       110,
+        "cabbage":      100,
+        "alfalfa":      365,
+        "bermudagrass": 365,
+        "sugarbeet":    180,
+        "sugarcane":    365,
+        "potato":       110,
+        "cassava":      300,
+        "sunflower":    120,
+        "canola":       150,
     }
 
     def _get_genotype_prefix(self) -> str:
@@ -442,8 +517,8 @@ class DSSATModel(CropModel):
         crop_module = self._CROPS_MODULES.get(self.crop, "MZCER")
 
         def _abs(path: Path) -> str:
-            """Absolute path string, no trailing separator."""
-            return str(path.resolve())
+            """Absolute path string, no trailing separator. Do not resolve symlinks to avoid Fortran 80-char limit."""
+            return str(path)
 
         workdir_abs = _abs(self.working_dir)
 
@@ -458,9 +533,8 @@ class DSSATModel(CropModel):
                 f"e.g. 'D:/tmp/dssat_runs' or '/tmp/dssat_runs'."
             )
 
-        # WED must point to the weather FILE (stem only, no extension or trailing slash).
-        # WTH file is always named WTHE0001.WTH — DSSAT appends .WTH itself.
-        wth_stem = workdir_abs + os.sep + "WTHE0001"
+        # WED must point to the weather directory (with a trailing separator).
+        wth_stem = workdir_abs + os.sep
 
         with open(self.working_dir / confile, "w") as f:
             f.write(f"WED    {wth_stem}\n")
@@ -555,6 +629,12 @@ class DSSATModel(CropModel):
         # Write DSSATPRO.V48/.L48 to the pixel working directory.
         self._write_confile(dssat_home)
 
+        # Copy CDE files and MODEL.ERR from dssat_home to working_dir (so DSSAT can find them with DSSAT_HOME pointing to working_dir)
+        for fname in ["DATA.CDE", "DETAIL.CDE", "MODEL.ERR", "OUTPUT.CDE", "SIMULATION.CDE"]:
+            src_file = dssat_home / fname
+            if src_file.exists():
+                shutil.copy2(str(src_file), str(self.working_dir / fname))
+
         # Use C mode (direct execution): dscsm048 C EXPS0001.MZX 1
         # This avoids the DSSBatch.v48 71-char padded-path bug in DSSAT 4.8.
         cmd = [bin_path, "C", self.exp_filename, "1"]
@@ -563,7 +643,7 @@ class DSSATModel(CropModel):
             # Inherit the full parent environment so PATH / LD_LIBRARY_PATH / HOME
             # are available on Linux; only override DSSAT_HOME.
             run_env = os.environ.copy()
-            run_env["DSSAT_HOME"] = str(dssat_home)
+            run_env["DSSAT_HOME"] = str(self.working_dir)
 
             result = subprocess.run(
                 cmd,
@@ -599,11 +679,9 @@ class DSSATModel(CropModel):
         summary_file = self.working_dir / "Summary.OUT"
         if not summary_file.exists():
             return {}
-            
         result_dict = {}
         with open(summary_file, 'r') as f:
             lines = f.readlines()
-            
         # Locate the header line and all data rows (one per simulated year)
         header_line = None
         data_rows = []
@@ -636,16 +714,23 @@ class DSSATModel(CropModel):
         # result_dict uses first-year values for metadata fields (PDAT, MDAT, …)
         result_dict.update(all_years[0])
 
-        if len(all_years) == 1:
-            return result_dict
-
-        # Multi-year: add per-year HWAM list and overwrite scalar HWAM with mean
+        # Count successful vs failed years regardless of NYERS — downstream tools
+        # often need to know the sample size behind the mean HWAM, and a failure
+        # rate per pixel is useful for spatial QA.
         hwam_values = [
             r["HWAM"] for r in all_years
             if isinstance(r.get("HWAM"), float) and r["HWAM"] > 0
         ]
+        result_dict["years_succeeded"] = len(hwam_values)
+        result_dict["years_failed"] = len(all_years) - len(hwam_values)
+
+        if len(all_years) == 1:
+            return result_dict
+
+        # Multi-year: add per-year HWAM list and overwrite scalar HWAM with mean
         result_dict["HWAM_yearly"] = [r.get("HWAM", float("nan")) for r in all_years]
         result_dict["HWAM"] = (
             sum(hwam_values) / len(hwam_values) if hwam_values else float("nan")
         )
+
         return result_dict
