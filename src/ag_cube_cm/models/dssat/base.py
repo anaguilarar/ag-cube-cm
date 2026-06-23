@@ -606,23 +606,28 @@ class DSSATModel(CropModel):
             dssat_home = Path(cfg_home or os.path.dirname(cfg_bin))
             logger.debug("[Pixel %s] Using config-supplied DSSAT binary: %s", self.pixel_id, bin_path)
         else:
-            try:
-                # Path 2 — delegate to DSSATTools bootstrap
-                from DSSATTools.run import (  # type: ignore[import]
-                    DSSAT_HOME as DT_HOME,
-                    BIN_PATH   as DT_BIN,
-                )
-                dssat_home = Path(DT_HOME)
-                bin_path   = DT_BIN
-                logger.debug("[Pixel %s] Using DSSATTools bootstrap: %s", self.pixel_id, dssat_home)
-            except ImportError:
-                # Path 3 — bundled static/ fallback
-                tmp_base = cfg_home or tempfile.gettempdir()
-                logger.debug(
-                    "[Pixel %s] Bootstrapping DSSAT from static/ into %s", self.pixel_id, tmp_base
-                )
-                dssat_home, bin_path_obj = self._bootstrap_dssat_home(tmp_base)
-                bin_path = str(bin_path_obj)
+            # Always use the bundled static/ via _bootstrap_dssat_home.
+            #
+            # We deliberately do NOT try `DSSATTools.run` here even when it's
+            # installed. Its module init does `os.remove(<temp>/DSSAT048/<f>)`
+            # followed by `os.symlink(...)`. On Windows without Developer Mode
+            # or admin, the symlink raises OSError 1314 — but the os.remove has
+            # already deleted the file. Under ncores>1 this races with sibling
+            # threads that are in the middle of running DSSAT subprocesses
+            # against the same shared <temp>/DSSAT048/ tree, and a vanished
+            # DATA.CDE / DETAIL.CDE / MODEL.ERR / OUTPUT.CDE / SIMULATION.CDE
+            # at the wrong moment makes DSSAT exit rc=99 with the misleading
+            # "Crop code incompatible / Model: ZCER 048" error.
+            #
+            # _bootstrap_dssat_home does the same job (copy static into
+            # <temp>/DSSAT048/), guarded by self._bootstrap_lock so concurrent
+            # threads can't corrupt the tree mid-run.
+            tmp_base = cfg_home or tempfile.gettempdir()
+            dssat_home, bin_path_obj = self._bootstrap_dssat_home(tmp_base)
+            bin_path = str(bin_path_obj)
+            logger.debug(
+                "[Pixel %s] Using bundled DSSAT bootstrap at %s", self.pixel_id, dssat_home,
+            )
 
         # Copy crop .CUL/.ECO/.SPE into run dir (DSSAT needs them locally).
         self._copy_genotype_files()
