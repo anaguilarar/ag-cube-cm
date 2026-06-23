@@ -27,13 +27,19 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import warnings
 from datetime import date
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import click
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# Harmonized schema: the climate + soil sections share the aggeodata Pydantic
+# models so an ag-cube-cm full_pipeline YAML uses the same shape as a stand-alone
+# aggeodata ingestion YAML. See aggeodata.config.schemas for the definitions.
+from aggeodata.config import IngestionClimateConfig, SoilConfig, VariableConfig
 
 logger = logging.getLogger(__name__)
 
@@ -168,11 +174,29 @@ class DatesSpec(BaseModel):
 
 
 class ClimateSpec(BaseModel):
-    sources: Annotated[
-        dict[str, str],
+    """Climate section.
+
+    The canonical shape mirrors aggeodata's CLIMATE block: a ``variables``
+    dict mapping each CF variable name to a ``VariableConfig``
+    (``source`` plus per-variable knobs like ``gee_project`` /
+    ``gee_dataset_id``).  The legacy ``sources: {pr: chirps, ...}`` form is
+    still accepted via a ``mode='before'`` shim that rewrites it into the
+    nested shape and emits a ``DeprecationWarning``.
+
+    Build-time options (``ncores``, ``agera5_version``,
+    ``reference_variable``) stay at the section level because they are
+    fed to aggeodata's ``GeneralConfig`` when the internal pipeline YAML
+    is generated.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    variables: Annotated[
+        dict[str, VariableConfig],
         Field(description=(
-            "Mapping of CF variable name to download source. "
-            "Keys: pr, tasmax, tasmin, rsds. "
+            "CF variable name -> source config. "
+            "Each value is a VariableConfig: {source, gee_project?, "
+            "gee_dataset_id?, chirts_source?, agera5_key?, nasa_power_param?}. "
             "Sources: chirps, chirts, agera5, nasa_power, gee."
         )),
     ]
@@ -180,27 +204,80 @@ class ClimateSpec(BaseModel):
     agera5_version: Annotated[str, Field(default="2_0")]
     reference_variable: Annotated[str, Field(default="pr",
         description="CF variable whose grid defines the output resolution")]
-    gee_project: Annotated[
-        str | None,
-        Field(default=None, description="GEE cloud project for ee.Initialize() — required when any source is 'gee'"),
-    ] = None
 
-    @field_validator("sources", mode="after")
+    @model_validator(mode="before")
     @classmethod
-    def _valid_sources(cls, v: dict[str, str]) -> dict[str, str]:
-        allowed_sources = {"chirps", "chirts", "agera5", "nasa_power", "gee"}
-        for cf_var, src in v.items():
-            if src not in allowed_sources:
-                raise ValueError(
-                    f"Unknown source '{src}' for variable '{cf_var}'. "
-                    f"Allowed: {sorted(allowed_sources)}"
+    def _migrate_legacy_form(cls, data: Any) -> Any:
+        """Accept the deprecated `sources: {var: src}` + flat `gee_project` form.
+
+        Rewrites it into the canonical `variables: {var: VariableConfig}` shape
+        and emits a single DeprecationWarning so existing YAMLs keep working
+        while the user is nudged toward the harmonized form.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        # Already canonical or partially canonical — leave as is
+        if "variables" in data and "sources" not in data:
+            return data
+
+        if "sources" in data:
+            sources = data.pop("sources")
+            top_gee_project = data.pop("gee_project", None)
+
+            if not isinstance(sources, dict):
+                raise TypeError(
+                    "climate.sources must be a mapping of CF variable -> source string"
                 )
-        return v
+
+            variables: dict[str, dict] = {}
+            for cf_var, value in sources.items():
+                if isinstance(value, str):
+                    var_cfg: dict[str, Any] = {"source": value}
+                    if value == "gee" and top_gee_project:
+                        var_cfg["gee_project"] = top_gee_project
+                    variables[cf_var] = var_cfg
+                elif isinstance(value, dict):
+                    # Already nested — accept as is
+                    variables[cf_var] = value
+                else:
+                    raise TypeError(
+                        f"climate.sources[{cf_var!r}] must be a string or mapping; got {type(value).__name__}"
+                    )
+
+            data["variables"] = variables
+
+            warnings.warn(
+                "The flat `climate.sources: {var: source}` form (with optional "
+                "top-level `gee_project`) is deprecated. Use the harmonized "
+                "`climate.variables: {var: {source: ..., gee_project: ...}}` form, "
+                "which matches the aggeodata climate-data-download YAML schema.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        return data
 
 
-class SoilSpec(BaseModel):
-    variables: Annotated[list[str], Field(default_factory=lambda: list(_DEFAULT_SOIL_VARS))]
-    depths: Annotated[list[str], Field(default_factory=lambda: list(_DEFAULT_SOIL_DEPTHS))]
+# SoilSpec is now an alias for aggeodata.config.SoilConfig — same schema is used
+# by the climate-data-download skill (when soil.enabled is true) and by
+# spatial-crop-modeler. Defaults are overridden here so ag-cube-cm gets the full
+# crop-modeling soil profile out of the box without explicit listing.
+class SoilSpec(SoilConfig):
+    variables: Annotated[
+        list[str],
+        Field(
+            default_factory=lambda: list(_DEFAULT_SOIL_VARS),
+            alias="layers",
+            description="SoilGrids variable names",
+        ),
+    ]
+    depths: Annotated[
+        list[str],
+        Field(
+            default_factory=lambda: list(_DEFAULT_SOIL_DEPTHS),
+            description="Depth intervals",
+        ),
+    ]
     reference_variable: Annotated[str, Field(default="wv1500")]
 
 
@@ -340,22 +417,22 @@ def _run_full_pipeline(cfg: FullPipelineConfig, dry_run: bool = False) -> dict:
     yield_nc = base / f"yield_{cfg.suffix}.nc"
     ageo_cfg_path = base / f"aggeodata_{cfg.suffix}.yaml"
 
-    # -- aggeodata config --
+    # -- aggeodata config (canonical lowercase schema) --
     ageo_cfg: dict = {
-        "DATES": {"starting_date": cfg.dates.start, "ending_date": cfg.dates.end},
-        "SPATIAL_INFO": {"extent": cfg.spatial.bbox},
-        "CLIMATE": {
+        "dates": {"starting_date": cfg.dates.start, "ending_date": cfg.dates.end},
+        "spatial_info": {"extent": cfg.spatial.bbox},
+        "climate": {
+            # Pydantic round-trip: dump each VariableConfig and drop unset/
+            # default keys so the on-disk YAML stays compact (avoids
+            # `gee_project: null` and `chirts_source: era5` noise on variables
+            # where those fields aren't relevant).
             "variables": {
-                var: (
-                    {"source": src, "gee_project": cfg.climate.gee_project}
-                    if src == "gee" and cfg.climate.gee_project
-                    else {"source": src}
-                )
-                for var, src in cfg.climate.sources.items()
+                cf_var: var_cfg.model_dump(exclude_none=True, exclude_defaults=True)
+                for cf_var, var_cfg in cfg.climate.variables.items()
             }
         },
-        "SOIL": {"enabled": False},
-        "GENERAL": {
+        "soil": {"enabled": False},
+        "general": {
             "suffix":             cfg.suffix,
             "ncores":             cfg.climate.ncores,
             "task":               "download",
@@ -363,14 +440,14 @@ def _run_full_pipeline(cfg: FullPipelineConfig, dry_run: bool = False) -> dict:
             "agera5_version":     cfg.climate.agera5_version,
             "target_crs":         "EPSG:4326",
         },
-        "PATHS": {"output_path": str(climate_dir)},
+        "paths": {"output_path": str(climate_dir)},
     }
     with open(ageo_cfg_path, "w") as fh:
         yaml.dump(ageo_cfg, fh, default_flow_style=False, sort_keys=False)
 
     if dry_run:
         click.echo(f"[dry-run] aggeodata config -> {ageo_cfg_path}")
-        click.echo(f"[dry-run] Would download: {list(cfg.climate.sources.keys())}")
+        click.echo(f"[dry-run] Would download: {list(cfg.climate.variables.keys())}")
         click.echo(f"[dry-run] Would build:    {weather_nc}")
         click.echo(f"[dry-run] Would download soil + build {soil_nc}")
         click.echo(f"[dry-run] Would simulate -> {yield_nc}")
@@ -382,7 +459,7 @@ def _run_full_pipeline(cfg: FullPipelineConfig, dry_run: bool = False) -> dict:
     if raw_dir.exists() and any(raw_dir.rglob("*.nc")):
         click.echo(f"  [skip] Climate already downloaded in {climate_dir}")
     else:
-        click.echo(f"  Downloading climate ({list(cfg.climate.sources.keys())}) ...")
+        click.echo(f"  Downloading climate ({list(cfg.climate.variables.keys())}) ...")
         from aggeodata.pipelines.download import run_download
         run_download(str(ageo_cfg_path))
 
@@ -493,17 +570,26 @@ dates:
   end:   "2022-12-31"
 
 climate:
-  sources:
-    pr:     chirps     # precipitation (0.05 deg, no API key)
-    tasmax: chirts     # max temperature (0.05 deg, no API key)
-    tasmin: chirts     # min temperature
-    rsds:   agera5     # solar radiation (0.1 deg, CDS API key required)
-    # rsds: nasa_power # alternative: no API key, 0.5 deg resolution
-    # pr:   gee        # alternative: Google Earth Engine (requires gee_project below)
+  # Same shape as aggeodata's climate-data-download YAML: each variable carries
+  # its own source plus any per-variable options (gee_project, gee_dataset_id,
+  # chirts_source, agera5_key, nasa_power_param).
+  variables:
+    pr:
+      source: chirps     # precipitation (0.05 deg, no API key)
+    tasmax:
+      source: chirts     # max temperature (0.05 deg, no API key)
+    tasmin:
+      source: chirts     # min temperature
+    rsds:
+      source: agera5     # solar radiation (0.1 deg, CDS API key required)
+    # rsds:
+    #   source: nasa_power      # alternative: no API key, 0.5 deg
+    # pr:
+    #   source: gee
+    #   gee_project: my-gcp-project   # required for 'gee' sources
   ncores:             2
   agera5_version:     "2_0"
   reference_variable: pr
-  # gee_project: my-gcp-project  # required when any source above is 'gee'
 
 soil:
   variables: [clay, sand, silt, bdod, cfvo, soc, phh2o, wv0010, wv0033, wv1500]
@@ -633,7 +719,10 @@ def validate(config: str) -> None:
     else:
         click.echo(f"  BBox    : {cfg.spatial.bbox}")
         click.echo(f"  Period  : {cfg.dates.start} -> {cfg.dates.end}")
-        click.echo(f"  Climate : {cfg.climate.sources}")
+        clim_summary = {
+            v: cfg.climate.variables[v].source for v in cfg.climate.variables
+        }
+        click.echo(f"  Climate : {clim_summary}")
         click.echo(f"  OutDir  : {cfg.output_dir}/{cfg.suffix}")
 
 
