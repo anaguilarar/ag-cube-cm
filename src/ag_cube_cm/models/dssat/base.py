@@ -368,7 +368,10 @@ class DSSATModel(CropModel):
                     n_amt = getattr(fert, 'n_kg_ha', 0.0)
                     p_amt = getattr(fert, 'p_kg_ha', 0.0)
                     k_amt = getattr(fert, 'k_kg_ha', 0.0)
-                    f.write(f" 1 {fdate} FE001 AP001     5 {n_amt:5.1f} {p_amt:5.1f} {k_amt:5.1f}   -99   -99   -99 Application\n")
+                    fmcd  = getattr(fert, 'fmcd', 'FE001')
+                    facd  = getattr(fert, 'facd', 'AP001')
+                    fdep  = getattr(fert, 'depth_cm', 5)
+                    f.write(f" 1 {fdate} {fmcd:>5} {facd:>5} {fdep:5d} {n_amt:5.1f} {p_amt:5.1f} {k_amt:5.1f}   -99   -99   -99 Application\n")
             else:
                 f.write(f" 1 {pdate_str} FE006   -99     4   -99   -99   -99   -99   -99   -99 Nofertilizer\n")
             f.write("\n")

@@ -91,12 +91,44 @@ class FertilizerApplication(BaseModel):
         Elemental phosphorus (P) applied, kg ha⁻¹.  Defaults to 0.
     k_kg_ha : float
         Elemental potassium (K) applied, kg ha⁻¹.  Defaults to 0.
+    fmcd : str
+        DSSAT fertilizer material code.  Defaults to ``"FE001"``
+        (ammonium nitrate / generic mineral N).  Common alternatives:
+        ``"FE004"`` = Urea, ``"FE009"`` = DAP (18-46-0).
+    facd : str
+        DSSAT fertilizer application code.  Defaults to ``"AP001"``
+        (broadcast, incorporated).  Alternatives: ``"AP002"`` = broadcast
+        surface, ``"AP003"`` = banded.
+    depth_cm : int
+        Fertilizer incorporation depth in cm.  Defaults to 5.
     """
 
     days_after_planting: Annotated[int, Field(ge=0, description="Days after planting (≥ 0)")]
     n_kg_ha: Annotated[float, Field(ge=0.0, default=0.0, description="Nitrogen applied (kg ha⁻¹)")]
     p_kg_ha: Annotated[float, Field(ge=0.0, default=0.0, description="Phosphorus applied (kg ha⁻¹)")]
     k_kg_ha: Annotated[float, Field(ge=0.0, default=0.0, description="Potassium applied (kg ha⁻¹)")]
+    fmcd: Annotated[
+        str,
+        Field(
+            default="FE001",
+            min_length=1,
+            max_length=5,
+            description="DSSAT fertilizer material code (e.g. FE001=Ammonium nitrate, FE004=Urea)",
+        ),
+    ]
+    facd: Annotated[
+        str,
+        Field(
+            default="AP001",
+            min_length=1,
+            max_length=5,
+            description="DSSAT fertilizer application code (AP001=broadcast incorporated, AP002=surface)",
+        ),
+    ]
+    depth_cm: Annotated[
+        int,
+        Field(default=5, ge=0, description="Fertilizer incorporation depth (cm)"),
+    ]
 
     @property
     def total_npk(self) -> tuple[float, float, float]:
@@ -133,6 +165,9 @@ class GeneralInfoConfig(BaseModel):
     dssat_path : str | None
         Root DSSAT installation directory (required when ``model == "dssat"``
         and using a custom DSSAT build).
+    number_years : int | None
+        Number of simulation years (NYERS) written to the DSSAT X-file.
+        When ``None`` the value is auto-detected from the weather record span.
     """
 
     country: Annotated[str, Field(description="Full country name, used in DSSAT file headers")]
@@ -161,6 +196,17 @@ class GeneralInfoConfig(BaseModel):
     dssat_path: Annotated[
         str | None,
         Field(default=None, description="DSSAT installation root (required for custom DSSAT builds)"),
+    ]
+    number_years: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            description=(
+                "Number of simulation years (NYERS) for DSSAT. "
+                "None → auto-detected from weather record span."
+            ),
+        ),
     ]
 
     @field_validator("country_code", mode="before")
