@@ -131,9 +131,9 @@ ag-cube-cm = "ag_cube_cm.cli:main"
 
 
 [project.urls]
-Homepage      = "https://github.com/anaguilarar/ag-cube-cm"
-Repository    = "https://github.com/anaguilarar/ag-cube-cm"
-"Bug Tracker" = "https://github.com/anaguilarar/ag-cube-cm/issues"
+Homepage      = "https://github.com/CGIAR-Climate-Data-Hub/ag-cube-cm"
+Repository    = "https://github.com/CGIAR-Climate-Data-Hub/ag-cube-cm"
+"Bug Tracker" = "https://github.com/CGIAR-Climate-Data-Hub/ag-cube-cm/issues"
 
 
 # ---------------------------------------------------------------------------
