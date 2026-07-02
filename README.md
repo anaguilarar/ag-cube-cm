@@ -2,7 +2,7 @@
 
 **ag-cube-cm** is a Python package for running process-based crop models (PBMs) over spatial domains. It takes pre-built climate and soil datacubes as inputs, runs pixel-level simulations in parallel, and produces yield potential maps — gridded NetCDF outputs showing grain yield (kg/ha) across planting windows, years, and space.
 
-The package is the **crop modeling layer** of a two-package workflow. Data acquisition (CHIRPS, CHIRTS, AgERA5, SoilGrids) is handled by the companion package [**aggeodata**](https://github.com/anaguilarar/aggeodata).
+The package is the **crop modeling layer** of a two-package workflow. Data acquisition (CHIRPS, CHIRTS, AgERA5, SoilGrids) is handled by the companion package [**aggeodata**](https://github.com/CGIAR-Climate-Data-Hub/aggeodata).
 
 Supported process-based crop models:
 - **[DSSAT](https://dssat.net/)** — industry-standard model covering maize, wheat, rice, soybean, and ~14 other crops.
@@ -32,16 +32,16 @@ Supported process-based crop models:
 
 ```bash
 # Core (spatial orchestration only)
-pip install git+https://github.com/anaguilarar/ag-cube-cm.git
+pip install git+https://github.com/CGIAR-Climate-Data-Hub/ag-cube-cm.git
 
 # With DSSAT and other crop models
-pip install "ag-cube-cm[models] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
+pip install "ag-cube-cm[models] @ git+https://github.com/CGIAR-Climate-Data-Hub/ag-cube-cm.git"
 
 # With MCP server (AI assistant integration)
-pip install "ag-cube-cm[mcp] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
+pip install "ag-cube-cm[mcp] @ git+https://github.com/CGIAR-Climate-Data-Hub/ag-cube-cm.git"
 
 # Everything
-pip install "ag-cube-cm[all] @ git+https://github.com/anaguilarar/ag-cube-cm.git"
+pip install "ag-cube-cm[all] @ git+https://github.com/CGIAR-Climate-Data-Hub/ag-cube-cm.git"
 ```
 
 > **DSSAT binary:** bundled in `models/dssat/static/bin/` for Linux and Windows. No separate DSSAT installation needed.
@@ -52,7 +52,7 @@ pip install "ag-cube-cm[all] @ git+https://github.com/anaguilarar/ag-cube-cm.git
 
 ### Step 1 — Build datacubes with aggeodata
 
-Install the companion package and build climate and soil datacubes for your region of interest. See the [aggeodata repository](https://github.com/anaguilarar/aggeodata) for details.
+Install the companion package and build climate and soil datacubes for your region of interest. See the [aggeodata repository](https://github.com/CGIAR-Climate-Data-Hub/aggeodata) for details.
 
 ```bash
 pip install aggeodata
